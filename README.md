@@ -116,6 +116,68 @@ connections when the whole cohort signed in at once. `ExamServer` now uses 256.
 
 ---
 
+## Environment variables
+
+Nothing here is required to boot — every value has a default, which is exactly
+why the two credentials below must be changed before anyone real logs in.
+Locally these live in `.env` (copy `.env.example`, never committed). On a host
+like Vercel you set them in the dashboard instead.
+
+| Variable | Default if unset | What it does |
+|---|---|---|
+| `ADMIN_KEY` | `change-me-admin` | Guards every `/admin` page and the results export. It travels in the URL as `?key=…`, so don't screen-share it. **Change this.** |
+| `DEFAULT_STUDENT_PASSWORD` | `mesa-demo-2026` | Password given to every account created by `seed.py`. **Change this**, then re-seed. |
+| `DB_DIR` | folder containing `seed.py` | Where `mesa.db` is written. Point it at a mounted volume in production; `api/index.py` sets it to `/tmp` on Vercel. |
+| `PORT` | `8000` | Local listen port. Ignored on serverless. |
+| `PROCTOR_FOCUS` | `on` | Logs when a student leaves the exam window. A deterrent and audit trail, not lockdown. |
+| `SEB_MODE` | `off` | `off` / `detect` / `enforce`. See **Safe Exam Browser**. |
+| `SEB_BROWSER_EXAM_KEY` | empty | From the SEB Config Tool. Needed for `enforce`. |
+| `SEB_CONFIG_KEY` | empty | From the SEB Config Tool. |
+| `SEB_QUIT_PASSWORD` | empty | Password to quit SEB. Leave empty while testing. |
+
+`server.py` prints a warning on startup while `ADMIN_KEY` is still a default.
+
+---
+
+## Deploying to Vercel
+
+```
+vercel deploy --prod        # or just push to the connected GitHub repo
+```
+
+`api/index.py` is the entrypoint. Vercel's Python runtime looks for a class
+named `handler` that subclasses `BaseHTTPRequestHandler`, which is what
+`server.Handler` already is, so it re-exports that class and `vercel.json`
+rewrites every path to it. Without those two files Vercel finds no framework
+and no `index.html`, treats the repo as a static site with nothing to serve,
+and answers **404 on every route** — that is the symptom this setup fixes.
+
+Set these in **Project → Settings → Environment Variables**:
+
+| Variable | Why |
+| --- | --- |
+| `ADMIN_KEY` | Otherwise it defaults to `change-me-admin` and your dashboard is public. |
+| `DEFAULT_STUDENT_PASSWORD` | Seeded student password. |
+| `DB_DIR` | Optional; already defaults to `/tmp`, the only writable path. |
+
+Needs Python 3.12+ (`server.py` uses a backslash inside an f-string
+expression, which is a syntax error before 3.12). Vercel's default runtime is
+3.12, so leave it alone — don't add a `Pipfile` pinning an older version.
+
+> **Read this before running a real exam on Vercel.** Serverless gives each
+> instance its own ephemeral `/tmp`, so the SQLite database is created and
+> seeded fresh on every cold start and is **not shared between concurrent
+> instances**. In practice: a student can be bounced to a new instance
+> mid-exam and land on an empty database, and two students can be served by
+> two different databases at once. Vercel is fine for a demo or a link you
+> want to show someone; the design intent of this project — all state on the
+> server, every interruption resumes exactly where you left off — only holds
+> on a single long-running process (`python3 server.py` on a VM or container)
+> or after moving storage to a networked database such as Postgres. See
+> **Known limitations**.
+
+---
+
 ## Browsers
 
 Chrome, Safari, Firefox, Edge — desktop and mobile. Plain HTML forms and CSS:
@@ -164,7 +226,7 @@ student add, password reset, deactivation and re-activation, access control.
 
 ---
 
-## Push to git
+## Push to git, and deploy
 
 A `.gitignore` is included: the database, `.env`, and caches are never
 committed — so student answers and your admin key stay off GitHub.
@@ -186,6 +248,13 @@ git push -u origin main
 
 Check `git status` before the first commit — `mesa.db` and `.env` should not
 be listed. Later changes: `git add -A && git commit -m "…" && git push`.
+
+**Hosting.** `api/index.py` + `vercel.json` make this run on Vercel — see
+**Deploying to Vercel** above. That is the right choice for a demo or a link
+you want to show someone, but Vercel's storage is ephemeral, so exam attempts
+do not survive a cold start. For a real exam the app needs a persistent
+process with a disk — a VM, a container, or a host like Railway, Render or
+Fly.io — with `DB_DIR` pointed at a mounted volume and a real `ADMIN_KEY`.
 
 ---
 
@@ -217,5 +286,8 @@ Changing adaptive rules: edit `config.json`, restart. No reseed needed.
 - **Focus tracking is a deterrent**, not lockdown: it records that a student
   left the window; it cannot stop them.
 - **SQLite.** Verified to 120 concurrent; beyond a few hundred, move to Postgres.
+- **Vercel is demo-only.** Serverless `/tmp` is ephemeral and per-instance, so
+  attempts do not survive a cold start and concurrent students may hit
+  different databases. Run a persistent process for a real exam.
 - TAO Community Edition integration remains parked (`PHASE2_RUNBOOK.md`), not
   disproven.

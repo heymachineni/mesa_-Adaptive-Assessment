@@ -1,0 +1,2 @@
+# The exam server is Python standard library only -- no third-party packages.
+# This file exists so Vercel detects the project as Python.
