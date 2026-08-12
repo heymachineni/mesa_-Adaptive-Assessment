@@ -1,0 +1,25 @@
+{
+  "adaptive": {
+    "startingDifficulty": "easy",
+    "easyToMediumCorrectThreshold": 3,
+    "mediumToHardCorrectThreshold": 2,
+    "hardToMediumWrongThreshold": 1,
+    "mediumToEasyWrongThreshold": 2
+  },
+  "exam": {
+    "title": "MESA Adaptive Assessment",
+    "maxQuestions": 30,
+    "durationMinutes": 30
+  },
+  "blueprint": {
+    "topics": {
+      "product": 18,
+      "marketing": 18,
+      "sales": 14,
+      "finance": 14,
+      "ai": 12,
+      "startups": 12,
+      "business": 12
+    }
+  }
+}

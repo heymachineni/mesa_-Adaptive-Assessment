@@ -1,0 +1,12 @@
+# Never commit these
+.env                    # your admin key and passwords
+mesa.db                 # the live exam database (student answers)
+mesa.db-wal
+mesa.db-shm
+server.log
+
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
