@@ -136,7 +136,7 @@ class TestSessionPersistence(Base):
         self.assertNotEqual(token, token2)
         status, body, _, _ = self.req("GET", "/home", cookie=token2)
         self.assertIn("Welcome back", body)
-        self.assertIn(">Continue<", body)
+        self.assertIn(">Resume exam<", body)
         self.assertIn("1 of 30 answered", body)
         status, _, _, loc = self.req("POST", "/start", {}, cookie=token2)
         self.assertEqual(loc, "/exam")

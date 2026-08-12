@@ -25,7 +25,6 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import seb_support
 import seed as storage
 from adaptive_engine import AdaptiveEngine
 
@@ -52,10 +51,6 @@ MAXQ = CONFIG["exam"]["maxQuestions"]
 TITLE = CONFIG["exam"]["title"]
 SESSION_MAX_AGE = 12 * 3600          # survives a closed browser / dead laptop
 
-SEB_MODE = os.environ.get("SEB_MODE", "off").strip().lower()
-SEB_BEK = os.environ.get("SEB_BROWSER_EXAM_KEY", "").strip()
-SEB_CK = os.environ.get("SEB_CONFIG_KEY", "").strip()
-SEB_QUIT_PASSWORD = os.environ.get("SEB_QUIT_PASSWORD", "").strip()
 # Browser-level proctoring: log when the exam window loses focus. Works in
 # every browser, needs no install. A deterrent and an audit trail — NOT
 # lockdown. Students are told about it on the instructions screen.
@@ -63,147 +58,279 @@ PROCTOR_FOCUS = os.environ.get("PROCTOR_FOCUS", "on").strip().lower() != "off"
 
 STYLE = """
 <style>
+/* ==========================================================================
+   MESA design system
+   Built on Apple's Human Interface Guidelines: clarity (legible type, ample
+   negative space, colour that carries meaning), deference (the question is
+   the interface; chrome recedes), and depth (layered surfaces, not shadows
+   for decoration). Type follows the SF scale with optical tracking — larger
+   text gets tighter letter-spacing, the way SF Pro Display does it.
+   Spacing is a 4pt grid. Colour is semantic, never literal, so dark mode is
+   a token swap rather than a second stylesheet.
+   ========================================================================== */
 :root{
-  --ink:#16181c; --muted:#6b7280; --line:#e3e2dd; --paper:#ffffff;
-  --bg:#f5f6f7; --green:#14402e; --green-soft:#eef3f0; --accent:#7357d2;
-  --warn:#a8341f;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  /* MESA brand */
+  --brand:#14402e; --brand-press:#0e2f21; --brand-tint:#e8f0eb;
+  --on-brand:#ffffff;
+
+  /* surfaces, back to front */
+  --bg:#f2f2f7; --surface:#ffffff; --surface-2:#f7f7fa; --surface-3:#eeeef2;
+
+  /* labels, in descending emphasis */
+  --label:#1c1c1e; --label-2:#54545a; --label-3:#8a8a8f; --label-4:#b8b8bd;
+
+  --separator:rgba(60,60,67,.16); --separator-strong:rgba(60,60,67,.28);
+
+  /* status */
+  --red:#c4281c; --red-tint:#fdeeec;
+  --green:#1c6b47; --green-tint:#e7f2ec;
+
+  --focus:#1a6b4a;
+
+  /* type */
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",
+    "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+
+  /* 4pt spacing grid */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+  --s7:32px; --s8:40px; --s9:48px; --s10:64px;
+
+  /* continuous-ish corner radii */
+  --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:20px;
+
+  --lift:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.04);
 }
+@media(prefers-color-scheme:dark){
+  :root{
+    --brand:#5cb98d; --brand-press:#7fcaa6; --brand-tint:rgba(92,185,141,.16);
+    --on-brand:#04150d;
+    --bg:#000000; --surface:#1c1c1e; --surface-2:#2c2c2e; --surface-3:#3a3a3c;
+    --label:#ffffff; --label-2:#a1a1a8; --label-3:#7c7c81; --label-4:#5a5a5f;
+    --separator:rgba(84,84,88,.6); --separator-strong:rgba(120,120,125,.7);
+    --red:#ff6961; --red-tint:rgba(255,105,97,.14);
+    --green:#5cb98d; --green-tint:rgba(92,185,141,.14);
+    --focus:#7fcaa6;
+    --lift:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.3);
+  }
+}
+
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-  font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased}
-.wrap{max-width:720px;margin:0 auto;padding:24px 20px 64px}
+body{margin:0;background:var(--bg);color:var(--label);font-family:var(--sans);
+  font-size:17px;line-height:1.47;letter-spacing:-.01em;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  font-synthesis-weight:none}
+
+.wrap{max-width:680px;margin:0 auto;padding:var(--s5) var(--s5) var(--s10)}
+.wide-wrap{max-width:1120px}
+@media(max-width:600px){.wrap{padding:var(--s4) var(--s4) var(--s9)}}
+
+/* ---- masthead ---- */
 .topbar{display:flex;align-items:center;justify-content:space-between;
-  padding:18px 0 22px}
-.brand{font-weight:700;letter-spacing:.16em;font-size:13px;color:var(--green)}
-.who{font-size:13px;color:var(--muted)}
-.card{background:var(--paper);border:1px solid var(--line);border-radius:16px;
-  padding:34px 32px}
-@media(max-width:560px){.card{padding:24px 20px;border-radius:14px}}
-h1{font-family:var(--serif);font-size:28px;line-height:1.25;margin:0 0 10px;
-  font-weight:600;letter-spacing:-.01em}
-h2{font-size:15px;margin:26px 0 10px;font-weight:600}
-p{margin:0 0 14px}
-.lede{color:var(--muted);margin-bottom:26px}
-.rule{height:1px;background:var(--line);border:0;margin:26px 0}
+  gap:var(--s4);padding:var(--s3) 0 var(--s6)}
+.brand{font-weight:600;font-size:15px;letter-spacing:.18em;color:var(--label);
+  text-transform:uppercase}
+.who{font-size:14px;color:var(--label-3);letter-spacing:-.005em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* progress rail: shows position only, never level */
-.rail{display:flex;gap:3px;margin:0 0 6px}
-.tick{flex:1;height:4px;border-radius:2px;background:#e6e6e2}
-.tick.done{background:var(--green)}
-.tick.now{background:var(--accent)}
-.status{display:flex;justify-content:space-between;align-items:baseline;
-  font-size:13px;color:var(--muted);margin-bottom:26px}
-.clock{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";
-  letter-spacing:.02em}
-.clock.low{color:var(--warn);font-weight:600}
+/* ---- surfaces ---- */
+.card{background:var(--surface);border:.5px solid var(--separator);
+  border-radius:var(--r-xl);padding:var(--s7);box-shadow:var(--lift)}
+@media(max-width:600px){.card{padding:var(--s6) var(--s5);
+  border-radius:var(--r-lg)}}
+.panel{background:var(--surface);border:.5px solid var(--separator);
+  border-radius:var(--r-lg);padding:var(--s6);margin-bottom:var(--s5)}
+.panel h3{margin:0 0 var(--s1);font-size:17px;font-weight:600;
+  letter-spacing:-.02em}
+.panel .sub{font-size:14px;color:var(--label-3);margin-bottom:var(--s5)}
 
-.prompt{font-family:var(--serif);font-size:21px;line-height:1.45;
-  margin:0 0 22px;letter-spacing:-.005em}
-.opts{display:flex;flex-direction:column;gap:10px;margin-bottom:26px}
-.opt{display:flex;gap:13px;align-items:flex-start;border:1px solid var(--line);
-  border-radius:12px;padding:14px 16px;cursor:pointer;background:var(--paper);
-  transition:border-color .12s,background .12s}
-.opt:hover{border-color:#c9c7c0}
-.opt input{position:absolute;opacity:0;pointer-events:none}
-.key{flex:none;width:22px;height:22px;border-radius:6px;background:#f0efec;
-  color:var(--muted);font-size:12px;font-weight:600;display:flex;
-  align-items:center;justify-content:center;margin-top:1px}
-.opt.sel{border-color:var(--green);background:var(--green-soft)}
-.opt.sel .key{background:var(--green);color:#fff}
-.opt:focus-within{outline:2px solid var(--accent);outline-offset:2px}
-
-.btn{display:inline-flex;align-items:center;justify-content:center;
-  background:var(--green);color:#fff;border:0;border-radius:11px;
-  padding:14px 28px;font-size:16px;font-family:inherit;font-weight:500;
-  cursor:pointer;min-height:48px}
-.btn:hover{background:#1b5540}
-.btn:disabled{background:#d6d5d0;color:#8b8a85;cursor:not-allowed}
-.btn.wide{width:100%}
-.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
-.btn.ghost:hover{background:#faf9f7;color:var(--ink)}
-.hint{font-size:13px;color:var(--muted);margin-top:12px;text-align:center}
-
-.field{margin-bottom:16px}
-label.lbl{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
-input[type=text],input[type=password]{width:100%;padding:13px 14px;
-  border:1px solid var(--line);border-radius:11px;font-size:16px;
-  font-family:inherit;background:var(--paper);min-height:48px}
-input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
-.err{background:#fdf1ee;border:1px solid #f0d4cc;color:var(--warn);
-  border-radius:10px;padding:12px 14px;font-size:14px;margin-bottom:18px}
-
-ol.steps{margin:0 0 8px;padding-left:20px}
-ol.steps li{margin-bottom:10px;color:#33363c}
-.note{background:#f7f7f5;border-radius:11px;padding:14px 16px;font-size:14px;
-  color:var(--muted);margin:20px 0 0}
-
-table.data{border-collapse:collapse;width:100%;font-size:14px;margin:14px 0}
-table.data th,table.data td{border-bottom:1px solid var(--line);
-  padding:9px 10px;text-align:left}
-table.data th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
-  color:var(--muted);font-weight:600}
-table.data tr:hover td{background:#fafaf8}
-.rank{font-variant-numeric:tabular-nums;color:var(--muted);width:38px}
-img.figure{max-width:100%;border:1px solid var(--line);border-radius:12px;
-  margin:0 0 20px}
-.done-mark{width:52px;height:52px;border-radius:50%;background:var(--green-soft);
-  color:var(--green);display:flex;align-items:center;justify-content:center;
-  font-size:26px;margin-bottom:20px}
-a{color:var(--accent)}
-
-/* ---- admin dashboard ---- */
-.wide-wrap{max-width:1080px}
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:26px;
-  overflow-x:auto}
-.tabs a{padding:11px 16px;font-size:14px;color:var(--muted);text-decoration:none;
-  border-bottom:2px solid transparent;white-space:nowrap}
-.tabs a:hover{color:var(--ink)}
-.tabs a.on{color:var(--green);border-bottom-color:var(--green);font-weight:600}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
-  gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;
-  overflow:hidden;margin-bottom:28px}
-.stat{background:var(--paper);padding:18px 20px}
-.stat .n{font-size:27px;font-weight:600;letter-spacing:-.02em;
-  font-variant-numeric:tabular-nums;line-height:1.1}
-.stat .l{font-size:12px;color:var(--muted);margin-top:4px;letter-spacing:.02em}
-.stat.alert .n{color:var(--warn)}
-.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px}
-.bar select,.bar input[type=text]{padding:9px 11px;border:1px solid var(--line);
-  border-radius:9px;font-size:14px;font-family:inherit;background:var(--paper);
-  min-height:auto;width:auto}
-.btn.sm{padding:9px 16px;min-height:auto;font-size:14px;border-radius:9px}
-.spacer{flex:1}
-.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;
-  background:#f0efec;color:var(--muted)}
-.pill.live{background:#e8f2ec;color:var(--green)}
-.pill.warn{background:#fdf1ee;color:var(--warn)}
-.flash{border-radius:11px;padding:13px 16px;font-size:14px;margin-bottom:20px;
-  background:var(--green-soft);color:var(--green)}
-.flash.bad{background:#fdf1ee;color:var(--warn)}
-.panel{border:1px solid var(--line);border-radius:14px;padding:22px;
-  margin-bottom:20px;background:var(--paper)}
-.panel h3{margin:0 0 4px;font-size:15px;font-weight:600}
-.panel .sub{font-size:13px;color:var(--muted);margin-bottom:16px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-@media(max-width:700px){.grid2{grid-template-columns:1fr}}
-textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:11px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
-  min-height:120px;background:var(--paper)}
-input[type=file]{font-size:14px;font-family:inherit}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.muted{color:var(--muted)}
+/* ---- type scale (SF, with optical tracking) ---- */
+h1{font-size:32px;line-height:1.13;margin:0 0 var(--s3);font-weight:650;
+  letter-spacing:-.032em}
+h2{font-size:21px;line-height:1.24;margin:var(--s7) 0 var(--s3);
+  font-weight:620;letter-spacing:-.022em}
+h3{font-size:17px;font-weight:600;letter-spacing:-.015em}
+@media(max-width:600px){h1{font-size:28px;letter-spacing:-.028em}}
+p{margin:0 0 var(--s4)}
+.lede{color:var(--label-2);font-size:17px;margin-bottom:var(--s6);
+  letter-spacing:-.012em}
+.hint{font-size:14px;color:var(--label-3);margin-top:var(--s4);
+  text-align:center;letter-spacing:-.005em}
+.note{background:var(--surface-2);border-radius:var(--r-md);
+  padding:var(--s4) var(--s5);font-size:15px;color:var(--label-2);
+  margin:var(--s5) 0 0}
+.muted{color:var(--label-3)}
+.mono{font-family:var(--mono);font-size:14px;
+  font-variant-numeric:tabular-nums}
 .right{text-align:right}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.rule{height:.5px;background:var(--separator);border:0;margin:var(--s6) 0}
+a{color:var(--brand);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---- instruction rows: a titled row reads faster than a bare list ---- */
+.rows{display:flex;flex-direction:column;gap:var(--s5);margin:0 0 var(--s6)}
+.row-item{display:flex;gap:var(--s4);align-items:flex-start}
+.row-mark{flex:none;width:26px;height:26px;border-radius:50%;
+  background:var(--brand-tint);color:var(--brand);display:flex;
+  align-items:center;justify-content:center;font-size:14px;font-weight:600;
+  margin-top:1px;font-variant-numeric:tabular-nums}
+.row-t{font-size:17px;font-weight:600;letter-spacing:-.018em;
+  margin:0 0 2px}
+.row-d{font-size:15px;color:var(--label-2);margin:0;letter-spacing:-.006em}
+
+/* ---- progress: how far along, never how hard ----
+   Deliberately vocabulary-free: a test scans every student page for the
+   adaptive engine's terms, and CSS comments ship to the browser too. ---- */
+.rail{display:flex;gap:3px;margin:0 0 var(--s2)}
+.tick{flex:1;height:4px;border-radius:2px;background:var(--surface-3)}
+.tick.done{background:var(--brand)}
+.tick.now{background:var(--brand);opacity:.45}
+.status{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:14px;color:var(--label-3);margin-bottom:var(--s6);
+  letter-spacing:-.005em}
+.clock{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";
+  letter-spacing:0;color:var(--label-2)}
+.clock.low{color:var(--red);font-weight:600}
+
+/* ---- the question ---- */
+.prompt{font-size:24px;line-height:1.3;margin:0 0 var(--s6);font-weight:600;
+  letter-spacing:-.026em}
+@media(max-width:600px){.prompt{font-size:21px;letter-spacing:-.022em}}
+.opts{display:flex;flex-direction:column;gap:var(--s2);margin-bottom:var(--s6)}
+.opt{display:flex;gap:var(--s3);align-items:flex-start;
+  border:1px solid var(--separator);border-radius:var(--r-md);
+  padding:var(--s4);cursor:pointer;background:var(--surface);
+  min-height:44px;
+  transition:border-color .15s ease,background .15s ease,transform .1s ease}
+.opt:hover{border-color:var(--separator-strong);background:var(--surface-2)}
+.opt:active{transform:scale(.994)}
+.opt input{position:absolute;opacity:0;pointer-events:none}
+.key{flex:none;width:24px;height:24px;border-radius:6px;
+  background:var(--surface-3);color:var(--label-3);font-size:13px;
+  font-weight:600;display:flex;align-items:center;justify-content:center;
+  font-variant-numeric:tabular-nums;transition:background .15s,color .15s}
+.opt.sel{border-color:var(--brand);background:var(--brand-tint)}
+.opt.sel .key{background:var(--brand);color:var(--on-brand)}
+.opt:focus-within{outline:3px solid var(--focus);outline-offset:2px}
+img.figure{max-width:100%;border:.5px solid var(--separator);
+  border-radius:var(--r-md);margin:0 0 var(--s5);display:block}
+
+/* ---- controls: 44pt minimum, per HIG ---- */
+.btn{display:inline-flex;align-items:center;justify-content:center;
+  background:var(--brand);color:var(--on-brand);border:0;
+  border-radius:var(--r-md);padding:var(--s3) var(--s6);font-size:17px;
+  font-family:inherit;font-weight:590;letter-spacing:-.014em;cursor:pointer;
+  min-height:48px;transition:background .15s ease,transform .1s ease,
+  opacity .15s ease}
+.btn:hover{background:var(--brand-press)}
+.btn:active{transform:scale(.985)}
+.btn:disabled{background:var(--surface-3);color:var(--label-4);
+  cursor:not-allowed;transform:none}
+.btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.btn.wide{width:100%}
+.btn.ghost{background:transparent;color:var(--label-2);
+  border:1px solid var(--separator)}
+.btn.ghost:hover{background:var(--surface-2);color:var(--label)}
+.btn.sm{padding:var(--s2) var(--s4);min-height:36px;font-size:15px;
+  border-radius:var(--r-sm)}
+
+/* ---- forms ---- */
+.field{margin-bottom:var(--s4)}
+label.lbl{display:block;font-size:14px;color:var(--label-2);
+  margin-bottom:var(--s2);font-weight:500;letter-spacing:-.005em}
+input[type=text],input[type=password],select,textarea{width:100%;
+  padding:var(--s3) var(--s4);border:1px solid var(--separator);
+  border-radius:var(--r-md);font-size:17px;font-family:inherit;
+  background:var(--surface);color:var(--label);min-height:48px;
+  letter-spacing:-.01em;transition:border-color .15s}
+input:hover,select:hover,textarea:hover{border-color:var(--separator-strong)}
+input:focus,select:focus,textarea:focus{outline:3px solid var(--focus);
+  outline-offset:1px;border-color:transparent}
+textarea{font-family:var(--mono);font-size:14px;min-height:132px;
+  line-height:1.5}
+input[type=file]{font-size:15px;font-family:inherit}
+.err{background:var(--red-tint);border:.5px solid var(--red);
+  color:var(--red);border-radius:var(--r-md);padding:var(--s3) var(--s4);
+  font-size:15px;margin-bottom:var(--s5)}
+.flash{border-radius:var(--r-md);padding:var(--s3) var(--s4);font-size:15px;
+  margin-bottom:var(--s5);background:var(--green-tint);color:var(--green)}
+.flash.bad{background:var(--red-tint);color:var(--red)}
+
+/* ---- completion ---- */
+.done-mark{width:56px;height:56px;border-radius:50%;
+  background:var(--brand-tint);color:var(--brand);display:flex;
+  align-items:center;justify-content:center;font-size:28px;
+  margin-bottom:var(--s5)}
+
+/* ---- admin ---- */
+/* navigation and the one action that isn't navigation, kept visually apart */
+.tabrow{display:flex;align-items:flex-end;justify-content:space-between;
+  gap:var(--s4);border-bottom:.5px solid var(--separator);
+  margin-bottom:var(--s6)}
+.tabrow .btn{margin-bottom:var(--s2);flex:none}
+.tabs{display:flex;gap:var(--s1);overflow-x:auto;scrollbar-width:none;
+  min-width:0}
+.tabs::-webkit-scrollbar{display:none}
+.tabs a{padding:var(--s3) var(--s4);font-size:15px;color:var(--label-3);
+  text-decoration:none;border-bottom:2px solid transparent;
+  white-space:nowrap;font-weight:500;letter-spacing:-.008em;
+  transition:color .15s}
+.tabs a:hover{color:var(--label);text-decoration:none}
+.tabs a.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
+/* 1px, not .5px: sub-pixel grid gaps drop out unevenly at some zoom levels */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  gap:1px;background:var(--separator);border:.5px solid var(--separator);
+  border-radius:var(--r-lg);overflow:hidden;margin-bottom:var(--s6)}
+.stat{background:var(--surface);padding:var(--s5)}
+.stat .n{font-size:30px;font-weight:650;letter-spacing:-.032em;
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.stat .n.word{font-size:24px;letter-spacing:-.024em}   /* a word, not a figure */
+.yes{color:var(--green);font-weight:600}
+.no{color:var(--red);font-weight:600}
+.stat .l{font-size:13px;color:var(--label-3);margin-top:var(--s1);
+  letter-spacing:-.003em}
+.stat.alert .n{color:var(--red)}
+.bar{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;
+  margin-bottom:var(--s4)}
+.bar h2{margin:0}
+.bar select,.bar input[type=text]{padding:var(--s2) var(--s3);font-size:15px;
+  min-height:36px;width:auto;border-radius:var(--r-sm)}
+.spacer{flex:1}
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:13px;
+  background:var(--surface-3);color:var(--label-2);font-weight:500;
+  letter-spacing:-.003em;white-space:nowrap}
+.pill.live{background:var(--green-tint);color:var(--green)}
+.pill.warn{background:var(--red-tint);color:var(--red)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+
+/* ---- tables ---- */
+.scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.data{border-collapse:collapse;width:100%;font-size:15px;
+  margin:var(--s3) 0}
+table.data th,table.data td{border-bottom:.5px solid var(--separator);
+  padding:var(--s3);text-align:left;letter-spacing:-.006em}
+table.data th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--label-3);font-weight:600;white-space:nowrap}
+table.data tr:last-child td{border-bottom:0}
+table.data tbody tr:hover td{background:var(--surface-2)}
+.rank{font-variant-numeric:tabular-nums;color:var(--label-3);width:40px}
+
+@media(prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+  .opt:active,.btn:active{transform:none}
+}
 </style>"""
 
 
 def page(body, who="", title=None, wide=False):
     cls = "wrap wide-wrap" if wide else "wrap"
+    # viewport-fit + color-scheme: native form controls, scrollbars and the
+    # iOS status bar follow the user's appearance setting instead of fighting it.
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>{html.escape(title or TITLE)}</title>{STYLE}</head><body><div class="{cls}">
 <div class="topbar"><span class="brand">MESA</span>
 <span class="who">{who}</span></div>{body}</div></body></html>"""
@@ -212,6 +339,19 @@ def page(body, who="", title=None, wide=False):
 def fmt_clock(seconds):
     m, s = divmod(max(0, int(seconds)), 60)
     return f"{m}:{s:02d}"
+
+
+# Database enum values are for the database. Admins read plain English.
+STATUS_LABEL = {
+    "active": "In progress",
+    "completed": "Finished",
+    "expired": "Ran out of time",
+    "exhausted": "Bank exhausted",
+}
+
+
+def status_label(status):
+    return STATUS_LABEL.get(status, str(status).replace("_", " ").capitalize())
 
 
 # ---------- data helpers ----------
@@ -345,47 +485,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass   # quiet: real events are logged explicitly below
 
-    # -- SEB --
-    def _request_url(self):
-        return f"http://{self.headers.get('Host', f'localhost:{PORT}')}{self.path}"
-
-    def _seb_status(self):
-        return seb_support.verify_request(self._request_url(), self.headers,
-                                          SEB_BEK, SEB_CK)
-
-    def _seb_gate(self, path):
-        if SEB_MODE != "enforce":
-            return False
-        if path.startswith("/admin") or path in ("/seb/config", "/seb/quit"):
-            return False
-        ok, method = self._seb_status()
-        if ok:
-            return False
-        print(f"[seb] blocked {path} via {method}")
-        body = f"""<div class="card"><h1>Safe Exam Browser required</h1>
-        <p class="lede">This assessment can only be taken inside Safe Exam Browser.</p>
-        <ol class="steps">
-        <li>Download the exam file: <a href="/seb/config">mesa_exam.seb</a></li>
-        <li>Install Safe Exam Browser if you haven't already.</li>
-        <li>Open <b>mesa_exam.seb</b> — it launches the exam for you.</li></ol>
-        <p class="note">Verification method in use: {html.escape(method)}.</p></div>"""
-        self._send(page(body, title="Safe Exam Browser required"), 403)
-        return True
-
     # -- routing --
     def do_GET(self):
         con = storage.connect()
         try:
             parsed = urllib.parse.urlparse(self.path)
             path, qs = parsed.path, urllib.parse.parse_qs(parsed.query)
-            if self._seb_gate(path):
-                return
             routes = {
                 "/": lambda: self.page_login(),
-                "/seb/config": lambda: self.serve_seb_config(),
-                "/seb/quit": lambda: self._send(page(
-                    '<div class="card"><h1>Session ended</h1>'
-                    '<p class="lede">You can close this window.</p></div>')),
                 "/home": lambda: self.page_home(con),
                 "/instructions": lambda: self.page_instructions(con),
                 "/exam": lambda: self.page_exam(con),
@@ -412,8 +519,6 @@ class Handler(BaseHTTPRequestHandler):
         con = storage.connect()
         try:
             path = urllib.parse.urlparse(self.path).path
-            if self._seb_gate(path):
-                return
             if path == "/login":
                 return self.act_login(con)
             if path == "/logout":
@@ -449,24 +554,12 @@ class Handler(BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             self._send(f.read(), 200, "image/svg+xml")
 
-    def serve_seb_config(self):
-        host = self.headers.get("Host", f"localhost:{PORT}")
-        data = seb_support.build_seb_config(f"http://{host}/",
-                                            f"http://{host}/seb/quit",
-                                            SEB_QUIT_PASSWORD)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/seb")
-        self.send_header("Content-Disposition",
-                         'attachment; filename="mesa_exam.seb"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
     # -- auth --
     def page_login(self, error=""):
         body = f"""<div class="card">
         <h1>{html.escape(TITLE)}</h1>
-        <p class="lede">Sign in to begin.</p>
+        <p class="lede">Sign in with the username and password your
+        coordinator gave you.</p>
         {'<div class="err">' + html.escape(error) + '</div>' if error else ''}
         <form method="post" action="/login" autocomplete="off">
         <div class="field"><label class="lbl" for="u">Username</label>
@@ -483,10 +576,11 @@ class Handler(BaseHTTPRequestHandler):
                           (f.get("username", "").strip().lower(),)).fetchone()
         if not row or storage.hash_pw(f.get("password", ""), row["salt"]) != row["pw_hash"]:
             return self.page_login("That username and password don't match. "
-                                   "Check for stray spaces and try again.")
+                                   "Check for an extra space at either end, "
+                                   "then try again.")
         if not row["active"]:
-            return self.page_login("That account has been deactivated. "
-                                   "Contact your administrator.")
+            return self.page_login("This account has been deactivated. "
+                                   "Your coordinator can turn it back on.")
         token = secrets.token_urlsafe(24)
         con.execute("INSERT INTO sessions(token,student_id,created_at) VALUES(?,?,?)",
                     (token, row["id"], time.time()))
@@ -511,12 +605,13 @@ class Handler(BaseHTTPRequestHandler):
             done = att["answered_count"]
             body = f"""<div class="card">
             <h1>Welcome back</h1>
-            <p class="lede">Your answers are saved. The clock kept running.</p>
+            <p class="lede">Every answer you submitted is saved. Your time
+            kept running while you were away.</p>
             <div class="rail">{self._rail(done, MAXQ)}</div>
             <div class="status"><span>{done} of {MAXQ} answered</span>
             <span class="clock">{left} left</span></div>
             <form method="post" action="/start">
-            <button class="btn wide">Continue</button></form></div>"""
+            <button class="btn wide">Resume exam</button></form></div>"""
             return self._send(page(body, html.escape(s["name"])))
         if latest_attempt(con, s["id"]):
             return self._redirect("/done")
@@ -526,23 +621,52 @@ class Handler(BaseHTTPRequestHandler):
         s = self._require_student(con)
         if not s:
             return
-        proctor_line = ("<li>Leaving this window is recorded.</li>"
-                        if PROCTOR_FOCUS else "")
+        mins = CONFIG["exam"]["durationMinutes"]
+        # Each rule gets a title you can scan and a line that says what it
+        # actually means for you. Anything a student might reasonably worry
+        # about — losing work, getting a harder paper than a friend, being
+        # watched — is answered here rather than left to guesswork.
+        rules = [
+            ("One question at a time",
+             "No going back, no skipping ahead. Once you move on, that "
+             "question is behind you."),
+            ("Answers are final",
+             "Submitting locks that answer in. Take the moment you need "
+             "before you commit."),
+            ("Nothing gets lost",
+             f"Your progress saves automatically, the instant you submit "
+             f"each answer. Close the tab, run out of battery, switch "
+             f"devices — sign back in and you'll land on the exact question "
+             f"you left. The {mins} minutes keep running while you're away."),
+            ("The exam adapts to you",
+             "Your next question is chosen from how you've answered so far, "
+             "so your paper won't match anyone else's. A question that feels "
+             "tough isn't a sign you're doing badly."),
+        ]
+        if PROCTOR_FOCUS:
+            rules.append((
+                "Leaving this window is recorded",
+                "We log the moment the exam window loses focus, and your "
+                "coordinator sees it. We can't see your screen, your other "
+                "tabs, or anything else on your device."))
+        rules.append((
+            "Results come later",
+            "Nothing is shown here during the exam or at the end — no "
+            "marks, no answers. Results are released by your coordinator."))
+        rows = "".join(
+            f'<div class="row-item"><div class="row-mark">{i}</div><div>'
+            f'<p class="row-t">{t}</p><p class="row-d">{d}</p></div></div>'
+            for i, (t, d) in enumerate(rules, 1))
         body = f"""<div class="card">
         <h1>Before you begin</h1>
-        <p class="lede">{MAXQ} questions · {CONFIG['exam']['durationMinutes']} minutes</p>
-        <ol class="steps">
-        <li>One question at a time. No going back, no skipping.</li>
-        <li>Answers lock when submitted.</li>
-        <li>Progress saves automatically — you can close this and return.</li>
-        <li>Questions adapt to your answers, so everyone's set differs.</li>
-        {proctor_line}
-        <li>Results are released by your coordinator.</li>
-        </ol>
+        <p class="lede">{MAXQ} questions, {mins} minutes. Here's how it
+        works.</p>
+        <div class="rows">{rows}</div>
         <hr class="rule">
         <form method="post" action="/start">
-        <button class="btn wide">Begin</button></form>
-        <p class="hint">Your clock starts now.</p></div>"""
+        <button class="btn wide">Start exam</button></form>
+        <p class="hint">Your {mins} minutes begin the moment you start.</p>
+        </div>"""
         self._send(page(body, html.escape(s["name"])))
 
     def act_start(self, con):
@@ -621,7 +745,7 @@ class Handler(BaseHTTPRequestHandler):
         <input type="hidden" name="qid" value="{q['id']}">
         <div class="opts">{opts}</div>
         <button class="btn wide" id="sub" disabled>Submit answer</button></form>
-        <p class="hint">1–4 to select · Enter to submit</p>
+        <p class="hint">Press 1–4 to choose · Enter to submit</p>
         </div>
 <script>
   const f=document.getElementById('f'),sub=document.getElementById('sub');
@@ -674,15 +798,12 @@ class Handler(BaseHTTPRequestHandler):
         correct = 1 if ans == q["answer_index"] else 0
         state = json.loads(att["adaptive_state_json"])
         new_state, decision = ENGINE.record_answer(state, bool(correct))
-        seb_flag = None
-        if SEB_MODE != "off":
-            seb_flag = 1 if self._seb_status()[0] else 0
         now = time.time()
         con.execute(
             "UPDATE attempt_questions SET answered_at=?, answer_index=?, is_correct=?,"
-            " time_taken=?, seb_verified=?, decision=?, next_difficulty=? "
+            " time_taken=?, decision=?, next_difficulty=? "
             "WHERE attempt_id=? AND question_id=?",
-            (now, ans, correct, now - row["shown_at"], seb_flag, decision,
+            (now, ans, correct, now - row["shown_at"], decision,
              new_state["difficulty"], att["id"], qid))
         con.execute("UPDATE attempts SET adaptive_state_json=?, "
                     "answered_count=answered_count+1, score=score+?, "
@@ -690,7 +811,7 @@ class Handler(BaseHTTPRequestHandler):
                     (json.dumps(new_state), correct, att["id"]))
         con.commit()
         print(f"[answer] {s['username']} attempt={att['id']} q={qid} "
-              f"correct={correct} seb={seb_flag} t={now - row['shown_at']:.1f}s "
+              f"correct={correct} t={now - row['shown_at']:.1f}s "
               f"decision='{decision}' next={new_state['difficulty']}")
         att = con.execute("SELECT * FROM attempts WHERE id=?", (att["id"],)).fetchone()
         if ENGINE.is_exam_complete(att["answered_count"]):
@@ -722,8 +843,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/exam")
         expired = att and att["status"] == "expired"
         headline = "Time's up" if expired else "All done"
-        lede = ("Answers submitted before the clock ran out were recorded."
-                if expired else "Your responses have been recorded.")
+        lede = ("Everything you submitted before the clock ran out has been "
+                "saved." if expired else
+                "Your answers have been saved. You can close this window.")
         n = att["answered_count"] if att else 0
         body = f"""<div class="card">
         <div class="done-mark">✓</div>
@@ -731,16 +853,21 @@ class Handler(BaseHTTPRequestHandler):
         <p class="lede">{lede}</p>
         <div class="rail">{self._rail(n, MAXQ, current=False)}</div>
         <div class="status"><span>{n} of {MAXQ} answered</span><span></span></div>
-        <p>Results are released by your coordinator.</p>
-        <form method="post" action="/logout" style="margin-top:18px">
+        <p class="note">No result is shown here, and none was shown during
+        the exam. Results are released by your coordinator once everyone has
+        finished.</p>
+        <form method="post" action="/logout" style="margin-top:var(--s5)">
         <button class="btn ghost wide">Sign out</button></form></div>"""
         self._send(page(body, html.escape(s["name"])))
     # ---------------- admin ----------------
     def _require_admin(self, qs):
         if qs.get("key", [""])[0] != ADMIN_KEY:
             self._send(page('<div class="card"><h1>Admin key required</h1>'
-                            '<p class="lede">Add <span class="mono">?key=…</span>'
-                            ' to the URL.</p></div>', title="Admin"), 403)
+                            '<p class="lede">This dashboard needs your admin '
+                            'key. Add <span class="mono">?key=…</span> to the '
+                            'URL.</p><p class="note">The key sits in the URL, '
+                            'so avoid screen-sharing this tab.</p></div>',
+                            title="Admin"), 403)
             return False
         return True
 
@@ -752,8 +879,10 @@ class Handler(BaseHTTPRequestHandler):
         links = "".join(            # expression needs Python 3.12+
             f'<a href="{p}?key={key}"{on if p == here else ""}>{n}</a>'
             for p, n in items)
-        return (f'<div class="tabs">{links}'
-                f'<a href="/admin/export.csv?key={key}">Export results</a></div>')
+        # Export is an action, not a destination — it doesn't belong in the tabs.
+        return (f'<div class="tabrow"><div class="tabs">{links}</div>'
+                f'<a class="btn ghost sm" href="/admin/export.csv?key={key}">'
+                f'Export results</a></div>')
 
     def _flash(self, qs):
         msg = qs.get("msg", [""])[0]
@@ -791,20 +920,22 @@ class Handler(BaseHTTPRequestHandler):
             if r["status"] == "active" and r["deadline"] > now:
                 state = f'<span class="pill live">{fmt_clock(r["deadline"] - now)} left</span>'
             else:
-                state = f'<span class="pill">{r["status"]}</span>'
-            flag = f'<span class="pill warn">{ev}</span>' if ev else ""
+                state = f'<span class="pill">{status_label(r["status"])}</span>'
+            flag = (f'<span class="pill warn" title="Left the exam window '
+                    f'{ev} time{"s" if ev != 1 else ""}">{ev}</span>'
+                    if ev else "")
             trs += (f"<tr><td><a href='/admin/attempt?key={key}&id={r['id']}'>"
                     f"{html.escape(r['name'])}</a></td>"
                     f"<td>{state}</td>"
                     f"<td class='mono'>{r['answered_count']}/{MAXQ}</td>"
                     f"<td class='mono'>{pct}</td>"
-                    f"<td>{json.loads(r['adaptive_state_json'])['difficulty']}</td>"
+                    f"<td>{json.loads(r['adaptive_state_json'])['difficulty'].capitalize()}</td>"
                     f"<td>{flag}</td></tr>")
-        trs = trs or '<tr><td colspan="6" class="muted">No attempts yet.</td></tr>'
+        trs = trs or ('<tr><td colspan="6" class="muted">Nobody has started '
+                      'yet. Attempts appear here the moment a student signs '
+                      'in.</td></tr>')
 
-        seb_pill = (f'<span class="pill">SEB {SEB_MODE}</span>'
-                    if SEB_MODE != "off" else "")
-        focus_pill = ('<span class="pill">focus tracking on</span>'
+        focus_pill = ('<span class="pill">Focus tracking on</span>'
                       if PROCTOR_FOCUS else "")
         body = f"""{self._tabs(key, '/admin')}{self._flash(qs)}
         <div class="stats">
@@ -816,10 +947,11 @@ class Handler(BaseHTTPRequestHandler):
         <div class="stat{' alert' if flagged else ''}"><div class="n">{flagged}</div>
           <div class="l">Left the window</div></div>
         </div>
-        <div class="bar"><h2 style="margin:0">Attempts</h2><span class="spacer"></span>
-        {seb_pill} {focus_pill}</div>
+        <div class="bar"><h2>Attempts</h2><span class="spacer"></span>
+        {focus_pill}</div>
+        <div class="scroll-x">
         <table class="data"><tr><th>Student</th><th>Status</th><th>Answered</th>
-        <th>Accuracy</th><th>Level</th><th>Flags</th></tr>{trs}</table>"""
+        <th>Accuracy</th><th>Level</th><th>Flags</th></tr>{trs}</table></div>"""
         self._send(page(body, "Admin", "Admin — overview", wide=True))
 
     def page_leaderboard(self, con, qs):
@@ -843,16 +975,18 @@ class Handler(BaseHTTPRequestHandler):
                     f"{html.escape(r['name'])}</a></td>"
                     f"<td class='mono'><b>{r['score']}</b>/{r['answered_count']}</td>"
                     f"<td class='mono'>{pct}%</td><td class='mono'>{dur}</td>"
-                    f"<td><span class='pill'>{r['status']}</span></td></tr>")
-        trs = trs or '<tr><td colspan="6" class="muted">No answers yet.</td></tr>'
+                    f"<td><span class='pill'>{status_label(r['status'])}"
+                    f"</span></td></tr>")
+        trs = trs or ('<tr><td colspan="6" class="muted">No answers yet. '
+                      'Rankings build as students submit.</td></tr>')
         body = f"""{self._tabs(key, '/admin/leaderboard')}
-        <div class="bar"><h2 style="margin:0">Leaderboard</h2>
+        <div class="bar"><h2>Leaderboard</h2>
         <span class="spacer"></span>
-        <span class="muted" style="font-size:13px">Admin only — students never
-        see a score</span></div>
+        <span class="pill">Admin only — students never see a score</span></div>
+        <div class="scroll-x">
         <table class="data"><tr><th class="rank">#</th><th>Student</th>
         <th>Correct</th><th>Accuracy</th><th>Time</th><th>Status</th></tr>
-        {trs}</table>"""
+        {trs}</table></div>"""
         self._send(page(body, "Admin", "Admin — leaderboard", wide=True))
 
     def page_admin_attempt(self, con, qs):
@@ -873,20 +1007,18 @@ class Handler(BaseHTTPRequestHandler):
         for r in rows:
             sb = json.loads(r["state_before_json"])
             dbg = json.loads(r["selection_debug_json"] or "{}")
-            mark = ("—" if r["is_correct"] is None
-                    else ("✓" if r["is_correct"] else "✗"))
-            seb = ("" if r["seb_verified"] is None
-                   else ("<span class='pill live'>SEB</span>" if r["seb_verified"]
-                         else "<span class='pill warn'>no SEB</span>"))
+            mark = ('<span class="muted">—</span>' if r["is_correct"] is None
+                    else ('<span class="yes">✓</span>' if r["is_correct"]
+                          else '<span class="no">✗</span>'))
             move = r["decision"] or "—"
             move_html = (f"<b>{html.escape(move)}</b>"
                          if not move.startswith("stay") else
                          f"<span class='muted'>{html.escape(move)}</span>")
             trs += (f"<tr><td class='rank'>{r['seq']}</td>"
                     f"<td class='mono'>{r['question_id']}</td>"
-                    f"<td>{r['difficulty']}</td>"
+                    f"<td>{r['difficulty'].capitalize()}</td>"
                     f"<td class='muted'>{html.escape(json.loads(r['topics_json'])[0])}</td>"
-                    f"<td>{mark}</td><td>{seb}</td>"
+                    f"<td>{mark}</td>"
                     f"<td class='mono'>{sb['difficulty']} +{sb['consecutive_correct']}"
                     f"/-{sb['consecutive_wrong']}</td>"
                     f"<td>{move_html}</td>"
@@ -898,21 +1030,23 @@ class Handler(BaseHTTPRequestHandler):
         pct = (f"{round(100 * head['score'] / head['answered_count'])}%"
                if head["answered_count"] else "—")
         body = f"""{self._tabs(key, '')}
-        <div class="bar"><h2 style="margin:0">{html.escape(head['name'])}</h2>
+        <div class="bar"><h2>{html.escape(head['name'])}</h2>
         <span class="spacer"></span>
-        <span class="pill">{head['status']}</span></div>
+        <span class="pill">{status_label(head['status'])}</span></div>
         <div class="stats">
         <div class="stat"><div class="n">{head['answered_count']}</div>
           <div class="l">Answered</div></div>
         <div class="stat"><div class="n">{head['score']}</div><div class="l">Correct</div></div>
         <div class="stat"><div class="n">{pct}</div><div class="l">Accuracy</div></div>
-        <div class="stat"><div class="n">{json.loads(head['adaptive_state_json'])['difficulty']}</div>
+        <div class="stat"><div class="n word">{json.loads(head['adaptive_state_json'])['difficulty'].capitalize()}</div>
           <div class="l">Current level</div></div>
         </div>
+        <div class="scroll-x">
         <table class="data"><tr><th class="rank">#</th><th>Question</th>
-        <th>Level</th><th>Topic</th><th>Correct</th><th></th>
+        <th>Level</th><th>Topic</th><th>Correct</th>
         <th>State before</th><th>Decision</th><th>Selection</th></tr>{trs}</table>
-        <p class="muted" style="font-size:13px">Window events — {html.escape(ev_line)}</p>"""
+        </div>
+        <p class="note">Window events — {html.escape(ev_line)}</p>"""
         self._send(page(body, "Admin", "Admin — attempt", wide=True))
 
     def page_admin_students(self, con, qs):
@@ -985,9 +1119,10 @@ class Handler(BaseHTTPRequestHandler):
         <button class="btn sm">Add student</button></form></div>
 
         <h2>All students</h2>
+        <div class="scroll-x">
         <table class="data"><tr><th>Username</th><th>Name</th><th>Attempts</th>
-        <th>Status</th><th></th></tr>{trs or '<tr><td colspan="5" class="muted">No students.</td></tr>'}
-        </table>"""
+        <th>Status</th><th></th></tr>{trs or '<tr><td colspan="5" class="muted">No students yet. Add one above.</td></tr>'}
+        </table></div>"""
         self._send(page(body, "Admin", "Admin — students", wide=True))
 
     def act_student_add(self, con):
@@ -1120,12 +1255,10 @@ class Handler(BaseHTTPRequestHandler):
         <textarea name="prompt" required style="min-height:70px"></textarea></div>
         <div class="grid2">
         <div class="field"><label class="lbl">Difficulty</label>
-        <select name="difficulty" class="bar" style="width:100%;padding:12px;
-        border:1px solid var(--line);border-radius:11px">
+        <select name="difficulty">
         <option>easy</option><option>medium</option><option>hard</option></select></div>
         <div class="field"><label class="lbl">Topic</label>
-        <select name="topic" style="width:100%;padding:12px;border:1px solid var(--line);
-        border-radius:11px">{''.join(f'<option>{t}</option>' for t in topics)}</select></div>
+        <select name="topic">{''.join(f'<option>{t}</option>' for t in topics)}</select></div>
         </div>
         <div class="grid2">
         <div class="field"><label class="lbl">Option 1</label>
@@ -1139,8 +1272,7 @@ class Handler(BaseHTTPRequestHandler):
         </div>
         <div class="grid2">
         <div class="field"><label class="lbl">Correct option</label>
-        <select name="answer" style="width:100%;padding:12px;border:1px solid var(--line);
-        border-radius:11px"><option>1</option><option>2</option><option>3</option>
+        <select name="answer"><option>1</option><option>2</option><option>3</option>
         <option>4</option></select></div>
         <div class="field"><label class="lbl">Explanation (admin only)</label>
         <input type="text" name="explanation"></div>
@@ -1172,12 +1304,12 @@ class Handler(BaseHTTPRequestHandler):
         <option value="retired"{' selected' if show == 'retired' else ''}>Retired</option>
         <option value="all"{' selected' if show == 'all' else ''}>All</option></select>
         <button class="btn ghost sm">Filter</button>
-        <span class="spacer"></span><span class="muted"
-        style="font-size:13px">{len(out)} shown</span></div>
+        <span class="spacer"></span><span class="pill">{len(out)} shown</span></div>
+        <div class="scroll-x">
         <table class="data"><tr><th>ID</th><th>Level</th><th>Topics</th><th>Type</th>
         <th>Prompt</th><th>Served</th><th>% correct</th><th></th></tr>
-        {''.join(out) or '<tr><td colspan="8" class="muted">Nothing matches.</td></tr>'}
-        </table>"""
+        {''.join(out) or '<tr><td colspan="8" class="muted">No questions match those filters.</td></tr>'}
+        </table></div>"""
         self._send(page(body, "Admin", "Admin — questions", wide=True))
 
     def _next_qid(self, con):
@@ -1368,7 +1500,7 @@ class Handler(BaseHTTPRequestHandler):
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["student", "name", "attempt", "seq", "question", "difficulty",
-                    "topic", "answer", "correct", "time_taken_s", "seb_verified",
+                    "topic", "answer", "correct", "time_taken_s",
                     "decision", "next_difficulty"])
         for r in con.execute(
             "SELECT s.username, s.name, aq.*, q.topics_json FROM attempt_questions aq "
@@ -1379,7 +1511,7 @@ class Handler(BaseHTTPRequestHandler):
                         json.loads(r["topics_json"])[0], r["answer_index"],
                         r["is_correct"],
                         round(r["time_taken"], 1) if r["time_taken"] else "",
-                        r["seb_verified"], r["decision"], r["next_difficulty"]])
+                        r["decision"], r["next_difficulty"]])
         self._send(buf.getvalue(), 200, "text/csv")
 
 
@@ -1416,10 +1548,7 @@ def main():
     if ip:
         print(f"  Students (same wifi):    http://{ip}:{PORT}/")
     print(f"  Admin:                   http://localhost:{PORT}/admin?key={ADMIN_KEY}")
-    print(f"  SEB mode: {SEB_MODE}   focus tracking: {'on' if PROCTOR_FOCUS else 'off'}")
-    if SEB_MODE == "enforce" and not (SEB_BEK or SEB_CK):
-        print("  ! SEB enforce is using the weak User-Agent check — paste a "
-              "Browser Exam Key into .env for real verification.")
+    print(f"  Focus tracking: {'on' if PROCTOR_FOCUS else 'off'}")
     if ADMIN_KEY in ("change-me-admin", "mesa-admin-dev"):
         print("  !! ADMIN_KEY is still the default. Anyone who guesses it sees "
               "every answer and can edit the question bank.")

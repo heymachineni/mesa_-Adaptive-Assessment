@@ -2,7 +2,7 @@
 
 An exam platform with rule-based adaptive difficulty, server-authoritative
 state, interruption-proof resume, an admin dashboard with question upload, and
-browser-level proctoring. **Python 3.8+ standard library only — nothing to
+browser-level proctoring. **Python 3.9+ standard library only — nothing to
 install.**
 
 ---
@@ -116,6 +116,37 @@ connections when the whole cohort signed in at once. `ExamServer` now uses 256.
 
 ---
 
+## Design
+
+The interface follows Apple's Human Interface Guidelines, adapted to MESA's
+deep green. Three ideas do most of the work:
+
+**Clarity.** Type is the SF scale with optical tracking — larger text gets
+tighter letter-spacing, the way SF Pro Display does. Spacing is a 4pt grid.
+Numbers use tabular figures so a running clock doesn't jitter.
+
+**Deference.** The question is the interface. On the exam screen there is no
+navigation, no logo bar competing for attention, no decoration — a progress
+rail, a clock, the question, four options. Chrome recedes so the content
+doesn't have to fight it.
+
+**Depth.** Layered surfaces and hairline separators carry hierarchy instead of
+heavy borders or drop shadows.
+
+Colour is semantic rather than literal (`--label-2`, `--separator`,
+`--surface`), so **dark mode is a token swap, not a second stylesheet**. Both
+appearances ship. Controls clear 44pt, focus rings are always visible for
+keyboard users, and `prefers-reduced-motion` removes every transition.
+
+Copy is written the way Apple writes it: second person, active voice, specific
+over vague. The instructions screen answers what a student would actually
+worry about — *will I lose my work, why is my paper different from my
+friend's, what exactly is being recorded* — instead of listing rules. Status
+values are translated for humans (`completed` renders as "Finished"); raw
+database enums never reach the screen.
+
+---
+
 ## Environment variables
 
 Nothing here is required to boot — every value has a default, which is exactly
@@ -130,10 +161,6 @@ like Vercel you set them in the dashboard instead.
 | `DB_DIR` | folder containing `seed.py` | Where `mesa.db` is written. Point it at a mounted volume in production; `api/index.py` sets it to `/tmp` on Vercel. |
 | `PORT` | `8000` | Local listen port. Ignored on serverless. |
 | `PROCTOR_FOCUS` | `on` | Logs when a student leaves the exam window. A deterrent and audit trail, not lockdown. |
-| `SEB_MODE` | `off` | `off` / `detect` / `enforce`. See **Safe Exam Browser**. |
-| `SEB_BROWSER_EXAM_KEY` | empty | From the SEB Config Tool. Needed for `enforce`. |
-| `SEB_CONFIG_KEY` | empty | From the SEB Config Tool. |
-| `SEB_QUIT_PASSWORD` | empty | Password to quit SEB. Leave empty while testing. |
 | `MESA_DEBUG` | unset | Serves deploy tracebacks in the response body. For debugging a host only — leave off in production. |
 
 `server.py` prints a warning on startup while `ADMIN_KEY` is still a default.
@@ -196,37 +223,17 @@ respected.
 
 ---
 
-## Safe Exam Browser
-
-**SEB cannot be installed by this or any web platform** — it needs admin
-rights on the machine. Moodle, TAO and commercial platforms have the same
-constraint. Options:
-
-| Situation | Approach |
-|---|---|
-| Lab / college machines | IT pre-installs SEB once; `SEB_MODE=enforce` |
-| Students' own laptops | Skip SEB; `PROCTOR_FOCUS=on` (default) — no install, works everywhere |
-| High stakes, own laptops | Send the installer a day early with a setup window |
-
-Implemented and tested here: `.seb` config generation (`/seb/config`),
-verification of SEB's `X-SafeExamBrowser-RequestHash`, three modes (`off` /
-`detect` / `enforce`), and per-answer SEB stamping in admin. With a Browser
-Exam Key in `.env`, a normal browser gets a 403 and a faked SEB user-agent is
-still rejected. Not verified here: the SEB desktop app locking a machine.
-
----
-
 ## Tests
 
 ```
-python3 -m unittest -v     # 69 tests
+python3 -m unittest -v     # 61 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```
 
 Adaptive transitions and boundaries · selection and fallback ladder · database
-non-repetition · HTTP security (wrong question, replay, expiry) · SEB config
-format and hashes · session persistence and resume · the no-results guarantee ·
+non-repetition · HTTP security (wrong question, replay, expiry) · session
+persistence and resume · the no-results guarantee ·
 no-JavaScript fallback · focus events · leaderboard ranking and access control ·
 concurrent students · question add, upload, validation, retire, templates ·
 student add, password reset, deactivation and re-activation, access control.
@@ -274,7 +281,6 @@ Fly.io — with `DB_DIR` pointed at a mounted volume and a real `ADMIN_KEY`.
 | `questions.json` | Seed bank: 90 questions across seven topics; MCQ, image and dataset types. |
 | `seed.py` | Schema and seeding; `UNIQUE(attempt_id, question_id)` guarantees non-repetition. |
 | `server.py` | All screens and state. The server owns the current question, clock and score. |
-| `seb_support.py` | `.seb` config generation and SEB header verification. |
 | `loadtest.py` | Cohort load test. |
 
 Changing adaptive rules: edit `config.json`, restart. No reseed needed.

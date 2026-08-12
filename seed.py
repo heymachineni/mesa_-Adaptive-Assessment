@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS attempt_questions(
   answer_index INTEGER,
   is_correct INTEGER,
   time_taken REAL,
-  seb_verified INTEGER,                    -- 1/0 when SEB mode active, NULL when off
   difficulty TEXT NOT NULL,
   state_before_json TEXT NOT NULL,
   decision TEXT,
