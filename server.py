@@ -748,8 +748,9 @@ class Handler(BaseHTTPRequestHandler):
         items = [("/admin", "Overview"), ("/admin/students", "Students"),
                  ("/admin/leaderboard", "Leaderboard"),
                  ("/admin/questions", "Questions")]
-        links = "".join(
-            f'<a href="{p}?key={key}"{" class=\'on\'" if p == here else ""}>{n}</a>'
+        on = " class='on'"          # hoisted: a backslash inside an f-string
+        links = "".join(            # expression needs Python 3.12+
+            f'<a href="{p}?key={key}"{on if p == here else ""}>{n}</a>'
             for p, n in items)
         return (f'<div class="tabs">{links}'
                 f'<a href="/admin/export.csv?key={key}">Export results</a></div>')

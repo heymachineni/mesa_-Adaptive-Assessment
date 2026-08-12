@@ -134,6 +134,7 @@ like Vercel you set them in the dashboard instead.
 | `SEB_BROWSER_EXAM_KEY` | empty | From the SEB Config Tool. Needed for `enforce`. |
 | `SEB_CONFIG_KEY` | empty | From the SEB Config Tool. |
 | `SEB_QUIT_PASSWORD` | empty | Password to quit SEB. Leave empty while testing. |
+| `MESA_DEBUG` | unset | Serves deploy tracebacks in the response body. For debugging a host only — leave off in production. |
 
 `server.py` prints a warning on startup while `ADMIN_KEY` is still a default.
 
@@ -160,9 +161,15 @@ Set these in **Project → Settings → Environment Variables**:
 | `DEFAULT_STUDENT_PASSWORD` | Seeded student password. |
 | `DB_DIR` | Optional; already defaults to `/tmp`, the only writable path. |
 
-Needs Python 3.12+ (`server.py` uses a backslash inside an f-string
-expression, which is a syntax error before 3.12). Vercel's default runtime is
-3.12, so leave it alone — don't add a `Pipfile` pinning an older version.
+Runs on any Python from 3.9 up, so whichever runtime Vercel picks will work.
+(It didn't always: `server.py` had a backslash inside an f-string expression,
+which is a syntax error before 3.12 and crashed the function with
+`FUNCTION_INVOCATION_FAILED` on Vercel's older runtime. Fixed.)
+
+**If a deploy fails**, the function reports why instead of dying silently. The
+traceback always goes to **Runtime Logs**; set `MESA_DEBUG=1` to also see it
+in the response body. Turn that back off afterwards — tracebacks leak paths
+and config.
 
 > **Read this before running a real exam on Vercel.** Serverless gives each
 > instance its own ephemeral `/tmp`, so the SQLite database is created and
