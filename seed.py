@@ -13,7 +13,8 @@ import secrets
 import sqlite3
 import sys
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "mesa.db")
+DB_PATH = os.path.join(os.environ.get("DB_DIR", os.path.dirname(__file__)),
+                       "mesa.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS students(
