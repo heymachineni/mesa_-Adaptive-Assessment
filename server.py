@@ -19,6 +19,7 @@ import json
 import os
 import random
 import secrets
+import sys
 import socket
 import time
 import urllib.parse
@@ -1396,8 +1397,18 @@ class ExamServer(ThreadingHTTPServer):
 
 def main():
     if not os.path.exists(storage.DB_PATH):
-        print("No database found — run:  python3 seed.py --fresh")
-        raise SystemExit(1)
+        # Cloud deploys start with an empty volume — seed it once, automatically.
+        if os.environ.get("AUTO_SEED", "1") != "0":
+            print(f"No database at {storage.DB_PATH} — seeding it now.")
+            argv = sys.argv
+            n = os.environ.get("SEED_STUDENTS", "")
+            sys.argv = ["seed.py"] + (["--students", n] if n.isdigit() else [])
+            storage.main()
+            sys.argv = argv
+        else:
+            print("No database found — run:  python3 seed.py --fresh")
+            raise SystemExit(1)
+
     ip = lan_ip()
     print(f"\n{TITLE}")
     print(f"  Students (this machine): http://localhost:{PORT}/")
@@ -1408,6 +1419,10 @@ def main():
     if SEB_MODE == "enforce" and not (SEB_BEK or SEB_CK):
         print("  ! SEB enforce is using the weak User-Agent check — paste a "
               "Browser Exam Key into .env for real verification.")
+    if ADMIN_KEY in ("change-me-admin", "mesa-admin-dev"):
+        print("  !! ADMIN_KEY is still the default. Anyone who guesses it sees "
+              "every answer and can edit the question bank.")
+        print("     Set a real one before putting this on a public URL.")
     print()
     ExamServer(("0.0.0.0", PORT), Handler).serve_forever()
 
