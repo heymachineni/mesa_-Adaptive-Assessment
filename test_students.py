@@ -42,14 +42,29 @@ def tearDownModule():
     _S["seed"].DB_PATH = _S["orig"]
 
 
-class Base(unittest.TestCase):
-    @property
-    def key(self):
-        return _S["server"].ADMIN_KEY
+def _admin_cookie():
+    seed = _S["seed"]
+    username, password = seed.ADMINS[0][0], seed.ADMINS[0][2]
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.request("POST", "/admin/login",
+              urllib.parse.urlencode({"username": username,
+                                      "password": password}),
+              {"Content-Type": "application/x-www-form-urlencoded",
+               "Connection": "close"})
+    r = c.getresponse()
+    r.read()
+    raw = r.getheader("Set-Cookie", "")
+    c.close()
+    assert "mesa_admin=" in raw, f"admin sign-in failed: {r.status}"
+    return "mesa_admin=" + raw.split("mesa_admin=", 1)[1].split(";", 1)[0]
 
-    def req(self, method, path, body=None):
+
+class Base(unittest.TestCase):
+    def req(self, method, path, body=None, auth=True):
         c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
         headers = {"Connection": "close"}
+        if auth:
+            headers["Cookie"] = _S.setdefault("cookie", _admin_cookie())
         if body is not None:
             body = urllib.parse.urlencode(body)
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -73,17 +88,20 @@ class Base(unittest.TestCase):
 
 
 class TestAccessControl(Base):
-    def test_students_page_needs_key(self):
-        status, _, _ = self.req("GET", "/admin/students")
-        self.assertEqual(status, 403)
-        status, _, _ = self.req("GET", "/admin/students?key=nope")
-        self.assertEqual(status, 403)
+    def test_students_page_needs_a_session(self):
+        status, _, loc = self.req("GET", "/admin/students", auth=False)
+        self.assertEqual(status, 303)
+        self.assertEqual(loc, "/admin/login")
+        status, _, loc = self.req("GET", "/admin/students?key=nope", auth=False)
+        self.assertEqual(status, 303)
 
-    def test_add_needs_key(self):
+    def test_add_needs_a_session(self):
         before = self.count_students()
-        status, _, _ = self.req("POST", "/admin/students/add",
-                                {"key": "nope", "username": "x", "name": "X", "password": "y"})
-        self.assertEqual(status, 403)
+        status, _, loc = self.req("POST", "/admin/students/add",
+                                  {"username": "x", "name": "X",
+                                   "password": "y"}, auth=False)
+        self.assertEqual(status, 303)
+        self.assertEqual(loc, "/admin/login")
         self.assertEqual(self.count_students(), before)
 
 
@@ -91,7 +109,6 @@ class TestAddStudent(Base):
     def test_add_one_student(self):
         before = self.count_students()
         status, _, loc = self.req("POST", "/admin/students/add", {
-            "key": self.key,
             "username": "newstudent",
             "name": "New Student",
             "password": "testpw123"})
@@ -108,7 +125,6 @@ class TestAddStudent(Base):
 
     def test_can_sign_in_with_new_password(self):
         self.req("POST", "/admin/students/add", {
-            "key": self.key,
             "username": "testuser99",
             "name": "Test 99",
             "password": "secretsecret"})
@@ -119,7 +135,6 @@ class TestAddStudent(Base):
     def test_duplicate_username_is_rejected(self):
         before = self.count_students()
         self.req("POST", "/admin/students/add", {
-            "key": self.key,
             "username": "chandu",               # already exists
             "name": "Duplicate",
             "password": "x"})
@@ -128,7 +143,6 @@ class TestAddStudent(Base):
     def test_missing_field_rejected(self):
         before = self.count_students()
         status, _, loc = self.req("POST", "/admin/students/add", {
-            "key": self.key,
             "username": "incomplete",
             "name": ""})                        # missing password and name
         self.assertEqual(status, 303)
@@ -145,7 +159,7 @@ class TestResetPassword(Base):
                                (sid,)).fetchone()["pw_hash"]
         con.close()
         status, _, loc = self.req("POST", "/admin/students/reset",
-                                  {"key": self.key, "id": str(sid)})
+                                  {"id": str(sid)})
         self.assertEqual(status, 303)
         self.assertIn("newpw=", loc)
         con = self.db()
@@ -160,7 +174,7 @@ class TestResetPassword(Base):
                           ("chandu",)).fetchone()["id"]
         con.close()
         status, _, loc = self.req("POST", "/admin/students/reset",
-                                  {"key": self.key, "id": str(sid)})
+                                  {"id": str(sid)})
         newpw = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["newpw"][0]
         status, _, _ = self.req("POST", "/login",
                                 {"username": "chandu", "password": newpw})
@@ -176,7 +190,7 @@ class TestDeactivate(Base):
         status, _, _ = self.req("POST", "/login",
                                 {"username": "student001", "password": "testpw"})
         self.assertEqual(status, 303)            # works before deactivation
-        self.req("POST", "/admin/students/toggle", {"key": self.key, "id": str(sid)})
+        self.req("POST", "/admin/students/toggle", {"id": str(sid)})
         status, body, _ = self.req("POST", "/login",
                                    {"username": "student001", "password": "testpw"})
         self.assertIn("deactivated", body)      # message shown
@@ -187,11 +201,11 @@ class TestDeactivate(Base):
         sid = con.execute("SELECT id FROM students WHERE username=?",
                           ("student002",)).fetchone()["id"]
         con.close()
-        self.req("POST", "/admin/students/toggle", {"key": self.key, "id": str(sid)})
+        self.req("POST", "/admin/students/toggle", {"id": str(sid)})
         status, _, _ = self.req("POST", "/login",
                                 {"username": "student002", "password": "testpw"})
         self.assertNotEqual(status, 303)        # blocked
-        self.req("POST", "/admin/students/toggle", {"key": self.key, "id": str(sid)})
+        self.req("POST", "/admin/students/toggle", {"id": str(sid)})
         status, _, _ = self.req("POST", "/login",
                                 {"username": "student002", "password": "testpw"})
         self.assertEqual(status, 303)            # working again
@@ -199,19 +213,19 @@ class TestDeactivate(Base):
 
 class TestStudentsDashboard(Base):
     def test_dashboard_shows_student_count(self):
-        status, body, _ = self.req("GET", f"/admin/students?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin/students")
         self.assertEqual(status, 200)
         self.assertIn("Total students", body)
         self.assertIn("Active", body)
 
     def test_dashboard_lists_all_students(self):
-        status, body, _ = self.req("GET", f"/admin/students?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin/students")
         self.assertEqual(status, 200)
         self.assertIn("chandu", body)
         self.assertIn("student001", body)
 
     def test_dashboard_shows_action_buttons(self):
-        status, body, _ = self.req("GET", f"/admin/students?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin/students")
         self.assertEqual(status, 200)
         # at least one Reset password and one Deactivate button
         self.assertGreaterEqual(body.count("Reset password"), 1)

@@ -10,7 +10,7 @@ install.**
 ## Run it
 
 ```
-cp .env.example .env             # set ADMIN_KEY before any real use
+cp .env.example .env             # optional: overrides for passwords
 python3 seed.py --fresh          # or: --students 120 for a full cohort
 python3 server.py
 ```
@@ -49,7 +49,32 @@ every student screen.
 
 ## The admin dashboard
 
-`http://localhost:8000/admin?key=…` — four tabs plus CSV export.
+`http://localhost:8000/admin/login` — sign in as an admin. Four tabs plus CSV
+export.
+
+**Admin accounts** are the `ADMINS` list in `seed.py`:
+
+```python
+ADMINS = [
+    ("chandu", "Chandu", "ChanduMesa"),
+    ("ankur",  "Ankur",  "AnkurMesa"),
+]
+```
+
+Edit that list to add, remove or repassword an admin, then re-seed
+(`python3 seed.py --fresh`). On a host that rebuilds the database on each cold
+start, a redeploy is enough. The list is authoritative: re-seeding applies a
+changed password and deletes anyone taken out of it.
+
+Passwords are stored salted and SHA-256 hashed, never in plain text, and the
+session is an `HttpOnly` cookie that expires after 8 hours — separate from a
+student's exam session, so signing in as a student grants nothing here.
+
+> **These passwords sit in the repository.** Anyone who can read the repo can
+> sign in. To keep one out of git, leave a placeholder in the list and set
+> `ADMIN_PASSWORD_<USERNAME>` (uppercase) in the environment instead — that
+> value wins, and `server.py` warns on startup about any password still coming
+> from the file.
 
 **Students** — add new students, reset their passwords, deactivate accounts
 (they can't sign in anymore). Each student row shows how many exam attempts
@@ -161,21 +186,22 @@ like Vercel you set them in the dashboard instead.
 
 | Variable | Default if unset | What it does |
 |---|---|---|
-| `ADMIN_KEY` | `change-me-admin` | Guards every `/admin` page and the results export. It travels in the URL as `?key=…`, so don't screen-share it. **Change this.** |
 | `DEFAULT_STUDENT_PASSWORD` | `mesa-demo-2026` | Password given to every account created by `seed.py`. **Change this**, then re-seed. |
+| `ADMIN_PASSWORD_<USERNAME>` | the `ADMINS` list in `seed.py` | Overrides one admin's password, so a real one need not be committed. |
 | `DB_DIR` | folder containing `seed.py` | Where `mesa.db` is written. Point it at a mounted volume in production; `api/index.py` sets it to `/tmp` on Vercel. |
 | `PORT` | `8000` | Local listen port. Ignored on serverless. |
 | `PROCTOR_FOCUS` | `on` | Logs when a student leaves the exam window. A deterrent and audit trail, not lockdown. |
 | `MESA_DEBUG` | unset | Serves deploy tracebacks in the response body. For debugging a host only — leave off in production. |
 
-`server.py` prints a warning on startup while `ADMIN_KEY` is still a default.
+`server.py` warns on startup about any admin password still coming from
+`seed.py` rather than the environment.
 
 **A variable that exists but is blank counts as unset.** `os.environ.get()`
 only falls back when a key is *absent*, so a dashboard variable created with
 an empty value returns `""` — which is how a blank `PORT` became `int("")`
 and killed a Vercel deploy at import. Every read goes through `seed.env`,
 `env_int` and `env_flag`, which treat blank as missing, so a stray empty
-variable can't take the app down or silently blank out the admin key.
+variable can't take the app down or silently blank out a password.
 
 ---
 
@@ -220,7 +246,7 @@ Set these in **Project → Settings → Environment Variables**:
 
 | Variable | Why |
 | --- | --- |
-| `ADMIN_KEY` | Otherwise it defaults to `change-me-admin` and your dashboard is public. |
+| `ADMIN_PASSWORD_CHANDU`, `ADMIN_PASSWORD_ANKUR` | Keeps the real admin passwords out of the repo. |
 | `DEFAULT_STUDENT_PASSWORD` | Seeded student password. |
 | `DB_DIR` | Optional; already defaults to `/tmp`, the only writable path. |
 
@@ -269,7 +295,7 @@ respected.
 ## Tests
 
 ```
-python3 -m unittest -v     # 79 tests
+python3 -m unittest -v     # 87 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```
@@ -288,7 +314,7 @@ capped vs open-ended exams · and the deployment guards in `test_deploy.py`.
 ## Push to git, and deploy
 
 A `.gitignore` is included: the database, `.env`, and caches are never
-committed — so student answers and your admin key stay off GitHub.
+committed — so student answers and your `.env` stay off GitHub.
 
 ```
 cd mesa_poc
@@ -313,7 +339,7 @@ be listed. Later changes: `git add -A && git commit -m "…" && git push`.
 you want to show someone, but Vercel's storage is ephemeral, so exam attempts
 do not survive a cold start. For a real exam the app needs a persistent
 process with a disk — a VM, a container, or a host like Railway, Render or
-Fly.io — with `DB_DIR` pointed at a mounted volume and a real `ADMIN_KEY`.
+Fly.io — with `DB_DIR` pointed at a mounted volume and real admin passwords.
 
 ---
 
@@ -400,9 +426,8 @@ exam length.
 - **Plain HTTP on a LAN** — fine for a supervised classroom, needs HTTPS for
   internet-facing use.
 - **POC-grade security**: no CSRF tokens, no rate limiting, SHA-256+salt
-  hashing. The admin key travels in the URL — don't screen-share it. It is
-  compared with `secrets.compare_digest`, and a blank key is always rejected
-  rather than matching an absent one.
+  hashing. Admin passwords live in `seed.py`, which is in git, unless
+  overridden by `ADMIN_PASSWORD_<USERNAME>`.
 - **Focus tracking is a deterrent**, not lockdown: it records that a student
   left the window; it cannot stop them.
 - **SQLite.** Verified to 120 concurrent; beyond a few hundred, move to Postgres.

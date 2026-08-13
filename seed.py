@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS students(
   pw_hash TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS admins(
+  id INTEGER PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  pw_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS admin_sessions(
+  token TEXT PRIMARY KEY,
+  admin_id INTEGER NOT NULL REFERENCES admins(id),
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS questions(
   id TEXT PRIMARY KEY,
   difficulty TEXT NOT NULL {difficulty_check},
@@ -144,6 +157,28 @@ DEMO_STUDENTS = [
     ("student004", "Student 004"),
 ]
 
+# ---------------------------------------------------------------------------
+# ADMIN ACCOUNTS — edit this list to add, remove or repassword an admin, then
+# re-seed (python3 seed.py --fresh). On a host that rebuilds the database on
+# each cold start, a redeploy is enough.
+#
+#     (username, display name, password)
+#
+# WARNING: these passwords sit in the repository in plain text, so anyone who
+# can read the repo can sign in. To keep one out of git, leave it here as a
+# placeholder and set ADMIN_PASSWORD_<USERNAME> (uppercase) in the
+# environment instead — that value wins.
+# ---------------------------------------------------------------------------
+ADMINS = [
+    ("chandu", "Chandu", "ChanduMesa"),
+    ("ankur", "Ankur", "AnkurMesa"),
+]
+
+
+def admin_password(username, fallback):
+    """Environment beats the list, so a real password need not be committed."""
+    return env("ADMIN_PASSWORD_" + username.upper(), fallback)
+
 
 def hash_pw(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode()).hexdigest()
@@ -196,6 +231,23 @@ def main():
             (username, name, salt, hash_pw(default_pw, salt)),
         )
 
+    # ADMINS is authoritative: re-seeding applies a changed password and drops
+    # anyone taken out of the list, so the file is the single source of truth.
+    holes = ",".join("?" * len(ADMINS)) or "''"
+    usernames = [u for u, _, _ in ADMINS]
+    con.execute(f"DELETE FROM admin_sessions WHERE admin_id IN "
+                f"(SELECT id FROM admins WHERE username NOT IN ({holes}))",
+                usernames)
+    con.execute(f"DELETE FROM admins WHERE username NOT IN ({holes})", usernames)
+    for username, name, password in ADMINS:
+        salt = secrets.token_hex(8)
+        con.execute(
+            "INSERT INTO admins(username,name,salt,pw_hash) VALUES(?,?,?,?) "
+            "ON CONFLICT(username) DO UPDATE SET name=excluded.name, "
+            "salt=excluded.salt, pw_hash=excluded.pw_hash",
+            (username, name, salt,
+             hash_pw(admin_password(username, password), salt)))
+
     with open(os.path.join(os.path.dirname(__file__), "questions.json")) as f:
         questions = json.load(f)
     for q in questions:
@@ -213,9 +265,11 @@ def main():
 
     n_q = con.execute("SELECT COUNT(*) c FROM questions").fetchone()["c"]
     n_s = con.execute("SELECT COUNT(*) c FROM students").fetchone()["c"]
-    print(f"seeded: {n_q} questions, {n_s} students")
+    n_a = con.execute("SELECT COUNT(*) c FROM admins").fetchone()["c"]
+    print(f"seeded: {n_q} questions, {n_s} students, {n_a} admins")
     print(f"demo logins: {', '.join(u for u, _ in DEMO_STUDENTS)}")
     print(f"demo password: {default_pw}  (override with DEFAULT_STUDENT_PASSWORD env var)")
+    print(f"admin logins: {', '.join(u for u, _, _ in ADMINS)}  ->  /admin/login")
     con.close()
 
 

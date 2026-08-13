@@ -65,7 +65,9 @@ class Base(unittest.TestCase):
             body = urllib.parse.urlencode(body)
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         if cookie:
-            headers["Cookie"] = f"mesa_session={cookie}"
+            # a bare token is a student session; anything with "=" is verbatim
+            headers["Cookie"] = (cookie if "=" in cookie
+                                 else f"mesa_session={cookie}")
         c.request(method, path, body, headers)
         r = c.getresponse()
         data = r.read().decode()
@@ -78,6 +80,14 @@ class Base(unittest.TestCase):
                                     {"username": user, "password": "testpw"})
         self.assertEqual(status, 303)
         return sc.split("mesa_session=")[1].split(";")[0]
+
+    def admin_login(self, username, password):
+        status, _, sc, _ = self.req("POST", "/admin/login",
+                                    {"username": username,
+                                     "password": password})
+        self.assertEqual(status, 303)
+        self.assertIn("mesa_admin=", sc)
+        return "mesa_admin=" + sc.split("mesa_admin=")[1].split(";")[0]
 
     def db(self):
         con = sqlite3.connect(self.seed.DB_PATH, timeout=15)
@@ -252,13 +262,20 @@ class TestLeaderboard(Base):
             self.answer_one("student009", strong, correct=True)
         for _ in range(4):
             self.answer_one("student010", weak, correct=False)
-        key = self.server.ADMIN_KEY
-        status, body, _, _ = self.req("GET", f"/admin/leaderboard?key={key}")
+        seed = self.seed
+        admin = self.admin_login(seed.ADMINS[0][0], seed.ADMINS[0][2])
+        status, body, _, _ = self.req("GET", "/admin/leaderboard", cookie=admin)
         self.assertEqual(status, 200)
         self.assertLess(body.index("Student 009"), body.index("Student 010"))
         self.assertIn("<b>4</b>/4", body)      # strong student's correct count
-        status, _, _, _ = self.req("GET", "/admin/leaderboard?key=wrong")
-        self.assertEqual(status, 403)            # never public
+        # never public: no session, and the old URL key, both bounce to login
+        for cookie in (None, "mesa_admin=wrong"):
+            status, _, _, loc = self.req("GET", "/admin/leaderboard",
+                                         cookie=cookie)
+            self.assertEqual(status, 303)
+            self.assertEqual(loc, "/admin/login")
+        status, _, _, loc = self.req("GET", "/admin/leaderboard?key=wrong")
+        self.assertEqual(loc, "/admin/login")
 
 
 class TestConcurrentCohort(Base):

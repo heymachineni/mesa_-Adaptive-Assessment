@@ -46,7 +46,6 @@ CONFIG = json.load(open(os.path.join(BASE, "config.json")))
 ENGINE = AdaptiveEngine(CONFIG)
 # storage.env treats a blank environment variable as unset. A dashboard that
 # creates PORT with an empty value would otherwise crash this import.
-ADMIN_KEY = storage.env("ADMIN_KEY", "change-me-admin")
 PORT = storage.env_int("PORT", 8000)
 DURATION = CONFIG["exam"]["durationMinutes"] * 60
 # None when config sets maxQuestions to null: the exam has no fixed length and
@@ -55,6 +54,9 @@ MAXQ = ENGINE.max_questions
 LEVELS = ENGINE.names             # the difficulty ladder, straight from config
 TITLE = CONFIG["exam"]["title"]
 SESSION_MAX_AGE = 12 * 3600          # survives a closed browser / dead laptop
+# Admins sit on the dashboard all day but their session is the keys to every
+# answer, so it expires sooner than a student's exam session.
+ADMIN_SESSION_MAX_AGE = 8 * 3600
 
 # Browser-level proctoring: log when the exam window loses focus. Works in
 # every browser, needs no install. A deterrent and an audit trail — NOT
@@ -273,7 +275,9 @@ input[type=file]{font-size:15px;font-family:inherit}
 .tabrow{display:flex;align-items:flex-end;justify-content:space-between;
   gap:var(--s4);border-bottom:.5px solid var(--separator);
   margin-bottom:var(--s6)}
-.tabrow .btn{margin-bottom:var(--s2);flex:none}
+.tabrow-actions{display:flex;align-items:center;gap:var(--s2);flex:none;
+  margin-bottom:var(--s2)}
+.tabrow-actions form{display:flex}
 .tabs{display:flex;gap:var(--s1);overflow-x:auto;scrollbar-width:none;
   min-width:0}
 .tabs::-webkit-scrollbar{display:none}
@@ -346,16 +350,14 @@ def fmt_clock(seconds):
     return f"{m}:{s:02d}"
 
 
-def admin_key_ok(supplied):
-    """Constant-time admin key check that refuses to accept nothing.
-
-    Guards against a blank ADMIN_KEY: an empty configured key compared
-    against an absent ?key= would match, opening the dashboard and the
-    results export to anyone who found the URL.
-    """
-    if not ADMIN_KEY or not supplied:
-        return False
-    return secrets.compare_digest(str(supplied), str(ADMIN_KEY))
+def get_admin(con, token):
+    """Resolve an admin session cookie to an active admin, or None."""
+    if not token:
+        return None
+    return con.execute(
+        "SELECT a.* FROM admin_sessions s JOIN admins a ON a.id=s.admin_id "
+        "WHERE s.token=? AND s.created_at > ? AND a.active=1",
+        (token, time.time() - ADMIN_SESSION_MAX_AGE)).fetchone()
 
 
 def answered_line(done):
@@ -521,6 +523,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/instructions": lambda: self.page_instructions(con),
                 "/exam": lambda: self.page_exam(con),
                 "/done": lambda: self.page_done(con),
+                "/admin/login": lambda: self.page_admin_login(),
                 "/admin": lambda: self.page_admin(con, qs),
                 "/admin/students": lambda: self.page_admin_students(con, qs),
                 "/admin/leaderboard": lambda: self.page_leaderboard(con, qs),
@@ -553,6 +556,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.act_answer(con)
             if path == "/event":
                 return self.act_event(con)
+            if path == "/admin/login":
+                return self.act_admin_login(con)
+            if path == "/admin/logout":
+                return self.act_admin_logout(con)
             if path == "/admin/questions/add":
                 return self.act_question_add(con)
             if path == "/admin/questions/upload":
@@ -905,29 +912,80 @@ class Handler(BaseHTTPRequestHandler):
         <button class="btn ghost wide">Sign out</button></form></div>"""
         self._send(page(body, html.escape(s["name"])))
     # ---------------- admin ----------------
-    def _require_admin(self, qs):
-        if not admin_key_ok(qs.get("key", [""])[0]):
-            self._send(page('<div class="card"><h1>Admin key required</h1>'
-                            '<p class="lede">This dashboard needs your admin '
-                            'key. Add <span class="mono">?key=…</span> to the '
-                            'URL.</p><p class="note">The key sits in the URL, '
-                            'so avoid screen-sharing this tab.</p></div>',
-                            title="Admin"), 403)
-            return False
-        return True
+    def page_admin_login(self, error=""):
+        body = f"""<div class="card">
+        <h1>Admin sign in</h1>
+        <p class="lede">This dashboard shows every student's answers and the
+        question bank, correct answers included.</p>
+        {'<div class="err">' + html.escape(error) + '</div>' if error else ''}
+        <form method="post" action="/admin/login" autocomplete="off">
+        <div class="field"><label class="lbl" for="u">Username</label>
+        <input type="text" id="u" name="username" autofocus autocapitalize="none"
+        autocorrect="off" spellcheck="false"></div>
+        <div class="field"><label class="lbl" for="p">Password</label>
+        <input type="password" id="p" name="password"></div>
+        <button class="btn wide">Sign in</button></form></div>"""
+        self._send(page(body, title="Admin sign in"))
 
-    def _tabs(self, key, here):
+    def act_admin_login(self, con):
+        f = self._form()
+        row = con.execute("SELECT * FROM admins WHERE username=?",
+                          (f.get("username", "").strip().lower(),)).fetchone()
+        password = f.get("password", "")
+        # Same message either way: don't reveal which admin usernames exist.
+        if (not row
+                or not storage.hash_pw(password, row["salt"]) == row["pw_hash"]
+                or not row["active"]):
+            print(f"[admin] failed sign-in for "
+                  f"{f.get('username', '')!r}")
+            return self.page_admin_login("That username and password don't "
+                                         "match.")
+        token = secrets.token_urlsafe(32)
+        con.execute("INSERT INTO admin_sessions(token,admin_id,created_at) "
+                    "VALUES(?,?,?)", (token, row["id"], time.time()))
+        con.commit()
+        print(f"[admin] {row['username']} signed in")
+        self._redirect("/admin", [f"mesa_admin={token}; HttpOnly; Path=/; "
+                                  f"SameSite=Lax; Max-Age={ADMIN_SESSION_MAX_AGE}"])
+
+    def act_admin_logout(self, con):
+        token = self._cookie("mesa_admin")
+        if token:
+            con.execute("DELETE FROM admin_sessions WHERE token=?", (token,))
+            con.commit()
+        self._redirect("/admin/login",
+                       ["mesa_admin=; Max-Age=0; Path=/"])
+
+    def _require_admin(self, con):
+        """Returns the admin row, or sends a redirect and returns None."""
+        admin = get_admin(con, self._cookie("mesa_admin"))
+        if not admin:
+            self._redirect("/admin/login")
+            return None
+        self._admin = admin          # so pages can show who is signed in
+        return admin
+
+    def _who(self):
+        admin = getattr(self, "_admin", None)
+        return html.escape(admin["name"]) if admin else "Admin"
+
+    def _tabs(self, here, admin=None):
         items = [("/admin", "Overview"), ("/admin/students", "Students"),
                  ("/admin/leaderboard", "Leaderboard"),
                  ("/admin/questions", "Questions")]
         on = " class='on'"          # hoisted: a backslash inside an f-string
         links = "".join(            # expression needs Python 3.12+
-            f'<a href="{p}?key={key}"{on if p == here else ""}>{n}</a>'
+            f'<a href="{p}"{on if p == here else ""}>{n}</a>'
             for p, n in items)
-        # Export is an action, not a destination — it doesn't belong in the tabs.
+        # Export and sign-out are actions, not destinations — they sit apart
+        # from the tabs, grouped together at the end of the row.
         return (f'<div class="tabrow"><div class="tabs">{links}</div>'
-                f'<a class="btn ghost sm" href="/admin/export.csv?key={key}">'
-                f'Export results</a></div>')
+                f'<div class="tabrow-actions">'
+                f'<a class="btn ghost sm" href="/admin/export.csv">'
+                f'Export results</a>'
+                f'<form method="post" action="/admin/logout">'
+                f'<button class="btn ghost sm">Sign out</button></form>'
+                f'</div></div>')
 
     def _flash(self, qs):
         msg = qs.get("msg", [""])[0]
@@ -938,9 +996,8 @@ class Handler(BaseHTTPRequestHandler):
                 f'{html.escape(msg.lstrip("!"))}</div>')
 
     def page_admin(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
-        key = qs["key"][0]
         now = time.time()
         total_students = con.execute("SELECT COUNT(*) c FROM students").fetchone()["c"]
         rows = con.execute(
@@ -971,7 +1028,7 @@ class Handler(BaseHTTPRequestHandler):
             flag = (f'<span class="pill warn" title="Left the exam window '
                     f'{ev} time{"s" if ev != 1 else ""}">{ev}</span>'
                     if ev else "")
-            trs += (f"<tr><td><a href='/admin/attempt?key={key}&id={r['id']}'>"
+            trs += (f"<tr><td><a href='/admin/attempt?id={r['id']}'>"
                     f"{html.escape(r['name'])}</a></td>"
                     f"<td>{state}</td>"
                     f"<td class='mono'>{count_cell}</td>"
@@ -984,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
 
         focus_pill = ('<span class="pill">Focus tracking on</span>'
                       if PROCTOR_FOCUS else "")
-        body = f"""{self._tabs(key, '/admin')}{self._flash(qs)}
+        body = f"""{self._tabs('/admin')}{self._flash(qs)}
         <div class="stats">
         <div class="stat"><div class="n">{started}</div>
           <div class="l">Started of {total_students}</div></div>
@@ -999,12 +1056,11 @@ class Handler(BaseHTTPRequestHandler):
         <div class="scroll-x">
         <table class="data"><tr><th>Student</th><th>Status</th><th>Answered</th>
         <th>Accuracy</th><th>Level</th><th>Flags</th></tr>{trs}</table></div>"""
-        self._send(page(body, "Admin", "Admin — overview", wide=True))
+        self._send(page(body, self._who(), "Admin — overview", wide=True))
 
     def page_leaderboard(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
-        key = qs["key"][0]
         rows = con.execute("""
             SELECT s.username, s.name, a.id, a.status, a.answered_count, a.score,
                    a.started_at,
@@ -1018,7 +1074,7 @@ class Handler(BaseHTTPRequestHandler):
             pct = round(100 * r["score"] / r["answered_count"])
             dur = fmt_clock((r["last_at"] or r["started_at"]) - r["started_at"])
             trs += (f"<tr><td class='rank'>{i}</td>"
-                    f"<td><a href='/admin/attempt?key={key}&id={r['id']}'>"
+                    f"<td><a href='/admin/attempt?id={r['id']}'>"
                     f"{html.escape(r['name'])}</a></td>"
                     f"<td class='mono'><b>{r['score']}</b>/{r['answered_count']}</td>"
                     f"<td class='mono'>{pct}%</td><td class='mono'>{dur}</td>"
@@ -1026,7 +1082,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"</span></td></tr>")
         trs = trs or ('<tr><td colspan="6" class="muted">No answers yet. '
                       'Rankings build as students submit.</td></tr>')
-        body = f"""{self._tabs(key, '/admin/leaderboard')}
+        body = f"""{self._tabs('/admin/leaderboard')}
         <div class="bar"><h2>Leaderboard</h2>
         <span class="spacer"></span>
         <span class="pill">Admin only — students never see a score</span></div>
@@ -1034,12 +1090,12 @@ class Handler(BaseHTTPRequestHandler):
         <table class="data"><tr><th class="rank">#</th><th>Student</th>
         <th>Correct</th><th>Accuracy</th><th>Time</th><th>Status</th></tr>
         {trs}</table></div>"""
-        self._send(page(body, "Admin", "Admin — leaderboard", wide=True))
+        self._send(page(body, self._who(), "Admin — leaderboard", wide=True))
 
     def page_admin_attempt(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
-        key, aid = qs["key"][0], qs.get("id", [""])[0]
+        aid = qs.get("id", [""])[0]
         head = con.execute(
             "SELECT a.*, s.name FROM attempts a JOIN students s ON s.id=a.student_id "
             "WHERE a.id=?", (aid,)).fetchone()
@@ -1076,7 +1132,7 @@ class Handler(BaseHTTPRequestHandler):
         ev_line = " · ".join(f"{e['kind']} {e['c']}" for e in evs) or "none"
         pct = (f"{round(100 * head['score'] / head['answered_count'])}%"
                if head["answered_count"] else "—")
-        body = f"""{self._tabs(key, '')}
+        body = f"""{self._tabs('')}
         <div class="bar"><h2>{html.escape(head['name'])}</h2>
         <span class="spacer"></span>
         <span class="pill">{status_label(head['status'])}</span></div>
@@ -1094,12 +1150,11 @@ class Handler(BaseHTTPRequestHandler):
         <th>State before</th><th>Decision</th><th>Selection</th></tr>{trs}</table>
         </div>
         <p class="note">Window events — {html.escape(ev_line)}</p>"""
-        self._send(page(body, "Admin", "Admin — attempt", wide=True))
+        self._send(page(body, self._who(), "Admin — attempt", wide=True))
 
     def page_admin_students(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
-        key = qs["key"][0]
         rows = con.execute(
             "SELECT s.*, COUNT(a.id) attempts FROM students s "
             "LEFT JOIN attempts a ON a.student_id=s.id "
@@ -1116,11 +1171,9 @@ class Handler(BaseHTTPRequestHandler):
                     f"<td>{label}</td>"
                     f"<td class='right'>"
                     f"<form method='post' action='/admin/students/reset' style='display:inline'>"
-                    f"<input type='hidden' name='key' value='{key}'>"
                     f"<input type='hidden' name='id' value='{r['id']}'>"
                     f"<button class='btn ghost sm'>Reset password</button></form> "
                     f"<form method='post' action='/admin/students/toggle' style='display:inline'>"
-                    f"<input type='hidden' name='key' value='{key}'>"
                     f"<input type='hidden' name='id' value='{r['id']}'>"
                     f"<button class='btn ghost sm'>{'Reactivate' if not r['active'] else 'Deactivate'}</button>"
                     f"</form></td></tr>")
@@ -1137,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
                           f'" class="btn ghost sm" style="margin-left:8px">Copy to clipboard</button>'
                           f'</div>')
 
-        body = f"""{self._tabs(key, '/admin/students')}{reset_flash}{self._flash(qs)}
+        body = f"""{self._tabs('/admin/students')}{reset_flash}{self._flash(qs)}
         <div class="stats">
         <div class="stat"><div class="n">{len(rows)}</div><div class="l">Total students</div></div>
         <div class="stat"><div class="n">{sum(1 for r in rows if r['active'])}</div>
@@ -1149,7 +1202,6 @@ class Handler(BaseHTTPRequestHandler):
         <div class="panel"><h3>Add a student</h3>
         <p class="sub">They can sign in immediately with this username and password.</p>
         <form method="post" action="/admin/students/add">
-        <input type="hidden" name="key" value="{key}">
         <div class="grid2">
         <div class="field"><label class="lbl">Username</label>
         <input type="text" name="username" required autocapitalize="none"></div>
@@ -1170,13 +1222,12 @@ class Handler(BaseHTTPRequestHandler):
         <table class="data"><tr><th>Username</th><th>Name</th><th>Attempts</th>
         <th>Status</th><th></th></tr>{trs or '<tr><td colspan="5" class="muted">No students yet. Add one above.</td></tr>'}
         </table></div>"""
-        self._send(page(body, "Admin", "Admin — students", wide=True))
+        self._send(page(body, self._who(), "Admin — students", wide=True))
 
     def act_student_add(self, con):
         f = self._form()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         username = f.get("username", "").strip().lower()
         name = f.get("name", "").strip()
         password = f.get("password", "").strip()
@@ -1199,13 +1250,12 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"Added {username}."
         except Exception as e:                     # noqa: BLE001
             msg = f"!Could not add the student: {e}"
-        self._redirect(f"/admin/students?key={ADMIN_KEY}&msg={urllib.parse.quote(msg)}")
+        self._redirect(f"/admin/students?msg={urllib.parse.quote(msg)}")
 
     def act_student_reset(self, con):
         f = self._form()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         sid = f.get("id", "")
         row = con.execute("SELECT username FROM students WHERE id=?", (sid,)).fetchone()
         if row:
@@ -1215,16 +1265,15 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("UPDATE students SET salt=?, pw_hash=? WHERE id=?",
                        (salt, pw_hash, sid))
             con.commit()
-            params = f"key={ADMIN_KEY}&newpw={urllib.parse.quote(newpw)}&uname={row['username']}"
+            params = f"newpw={urllib.parse.quote(newpw)}&uname={row['username']}"
             self._redirect(f"/admin/students?{params}")
         else:
-            self._redirect(f"/admin/students?key={ADMIN_KEY}&msg=!Student not found.")
+            self._redirect(f"/admin/students?msg=!Student not found.")
 
     def act_student_toggle(self, con):
         f = self._form()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         sid = f.get("id", "")
         row = con.execute("SELECT active FROM students WHERE id=?", (sid,)).fetchone()
         if row:
@@ -1234,13 +1283,12 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"{'Reactivated' if new else 'Deactivated'}."
         else:
             msg = "!Student not found."
-        self._redirect(f"/admin/students?key={ADMIN_KEY}&msg={urllib.parse.quote(msg)}")
+        self._redirect(f"/admin/students?msg={urllib.parse.quote(msg)}")
 
 
     def page_admin_questions(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
-        key = qs["key"][0]
         diff = qs.get("difficulty", [""])[0]
         topic = qs.get("topic", [""])[0]
         show = qs.get("show", ["active"])[0]
@@ -1274,7 +1322,6 @@ class Handler(BaseHTTPRequestHandler):
                 f"<td>{html.escape(r['prompt'][:64])}…</td>"
                 f"<td class='mono'>{st['n']}</td><td class='mono'>{rate}</td>"
                 f"<td class='right'><form method='post' action='/admin/questions/toggle'>"
-                f"<input type='hidden' name='key' value='{key}'>"
                 f"<input type='hidden' name='id' value='{r['id']}'>"
                 f"<button class='btn ghost sm'>{action}</button></form></td></tr>")
 
@@ -1285,7 +1332,7 @@ class Handler(BaseHTTPRequestHandler):
                 o += f'<option value="{v}"{sel}>{v}</option>'
             return o
 
-        body = f"""{self._tabs(key, '/admin/questions')}{self._flash(qs)}
+        body = f"""{self._tabs('/admin/questions')}{self._flash(qs)}
         <div class="stats">
         <div class="stat"><div class="n">{counts['easy']}</div><div class="l">Easy</div></div>
         <div class="stat"><div class="n">{counts['medium']}</div><div class="l">Medium</div></div>
@@ -1297,7 +1344,6 @@ class Handler(BaseHTTPRequestHandler):
         <div class="panel"><h3>Add a question</h3>
         <p class="sub">Appears in the pool immediately.</p>
         <form method="post" action="/admin/questions/add">
-        <input type="hidden" name="key" value="{key}">
         <div class="field"><label class="lbl">Question</label>
         <textarea name="prompt" required style="min-height:70px"></textarea></div>
         <div class="grid2">
@@ -1331,19 +1377,17 @@ class Handler(BaseHTTPRequestHandler):
         one bad row rejects the file and tells you which line.</p>
         <form method="post" action="/admin/questions/upload"
               enctype="multipart/form-data">
-        <input type="hidden" name="key" value="{key}">
         <div class="field"><input type="file" name="file" accept=".csv,.json"></div>
         <div class="field"><label class="lbl">…or paste CSV / JSON here</label>
         <textarea name="pasted" placeholder="id,difficulty,topic,prompt,option1,option2,option3,option4,answer,explanation"></textarea></div>
         <button class="btn sm">Upload</button>
-        <a class="btn ghost sm" href="/admin/questions/template.csv?key={key}"
+        <a class="btn ghost sm" href="/admin/questions/template.csv"
            style="margin-left:8px">Download CSV template</a>
-        <a class="btn ghost sm" href="/admin/questions/export.json?key={key}"
+        <a class="btn ghost sm" href="/admin/questions/export.json"
            style="margin-left:8px">Export bank</a>
         </form></div>
 
         <form method="get" action="/admin/questions" class="bar">
-        <input type="hidden" name="key" value="{key}">
         <select name="difficulty">{opts('levels', LEVELS, diff)}</select>
         <select name="topic">{opts('topics', topics, topic)}</select>
         <select name="show">
@@ -1357,7 +1401,7 @@ class Handler(BaseHTTPRequestHandler):
         <th>Prompt</th><th>Served</th><th>% correct</th><th></th></tr>
         {''.join(out) or '<tr><td colspan="8" class="muted">No questions match those filters.</td></tr>'}
         </table></div>"""
-        self._send(page(body, "Admin", "Admin — questions", wide=True))
+        self._send(page(body, self._who(), "Admin — questions", wide=True))
 
     def _next_qid(self, con):
         row = con.execute("SELECT id FROM questions ORDER BY id DESC LIMIT 1").fetchone()
@@ -1366,9 +1410,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_question_add(self, con):
         f = self._form()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         try:
             options = [f.get(f"o{i}", "").strip() for i in range(1, 5)]
             if not all(options) or not f.get("prompt", "").strip():
@@ -1386,7 +1429,7 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"Added {qid}."
         except Exception as e:                     # noqa: BLE001
             msg = f"!Could not add the question: {e}"
-        self._redirect(f"/admin/questions?key={ADMIN_KEY}&msg={urllib.parse.quote(msg)}")
+        self._redirect(f"/admin/questions?msg={urllib.parse.quote(msg)}")
 
     def _parse_multipart(self):
         """Minimal multipart/form-data reader (the stdlib cgi module is gone in 3.13)."""
@@ -1474,9 +1517,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_question_upload(self, con):
         f = self._parse_multipart()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         text = (f.get("file") or "").strip() or (f.get("pasted") or "")
         rows, errors = self.parse_question_upload(text)
         if errors:
@@ -1495,13 +1537,12 @@ class Handler(BaseHTTPRequestHandler):
                 added += 1
             con.commit()
             msg = f"Added {added} question{'s' if added != 1 else ''}."
-        self._redirect(f"/admin/questions?key={ADMIN_KEY}&msg={urllib.parse.quote(msg)}")
+        self._redirect(f"/admin/questions?msg={urllib.parse.quote(msg)}")
 
     def act_question_toggle(self, con):
         f = self._form()
-        if not admin_key_ok(f.get("key", "")):
-            return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
-                              403)
+        if not self._require_admin(con):
+            return
         qid = f.get("id", "")
         row = con.execute("SELECT active FROM questions WHERE id=?", (qid,)).fetchone()
         if row:
@@ -1511,10 +1552,10 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"{qid} {'restored' if new else 'retired'}."
         else:
             msg = f"!{qid} not found."
-        self._redirect(f"/admin/questions?key={ADMIN_KEY}&msg={urllib.parse.quote(msg)}")
+        self._redirect(f"/admin/questions?msg={urllib.parse.quote(msg)}")
 
     def admin_template(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -1531,7 +1572,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(buf.getvalue(), 200, "text/csv")
 
     def admin_export_bank(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
         out = []
         for r in con.execute("SELECT * FROM questions ORDER BY id"):
@@ -1543,7 +1584,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(out, indent=1), 200, "application/json")
 
     def admin_export(self, con, qs):
-        if not self._require_admin(qs):
+        if not self._require_admin(con):
             return
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -1595,12 +1636,14 @@ def main():
     print(f"  Students (this machine): http://localhost:{PORT}/")
     if ip:
         print(f"  Students (same wifi):    http://{ip}:{PORT}/")
-    print(f"  Admin:                   http://localhost:{PORT}/admin?key={ADMIN_KEY}")
+    print(f"  Admin:                   http://localhost:{PORT}/admin/login")
     print(f"  Focus tracking: {'on' if PROCTOR_FOCUS else 'off'}")
-    if ADMIN_KEY in ("change-me-admin", "mesa-admin-dev"):
-        print("  !! ADMIN_KEY is still the default. Anyone who guesses it sees "
-              "every answer and can edit the question bank.")
-        print("     Set a real one before putting this on a public URL.")
+    committed = [u for u, _, pw in storage.ADMINS
+                 if storage.admin_password(u, pw) == pw]
+    if committed:
+        print(f"  !! Admin password{'s' if len(committed) > 1 else ''} for "
+              f"{', '.join(committed)} come from seed.py, which is in git.")
+        print("     Set ADMIN_PASSWORD_<USERNAME> to keep one out of the repo.")
     print()
     ExamServer(("0.0.0.0", PORT), Handler).serve_forever()
 

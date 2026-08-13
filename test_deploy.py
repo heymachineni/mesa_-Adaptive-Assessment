@@ -124,9 +124,10 @@ class TestBlankEnvironmentVariables(unittest.TestCase):
     Vercel therefore produced int("") and killed the deployment at import.
     """
 
-    BLANK = {"PORT": "", "ADMIN_KEY": "", "DEFAULT_STUDENT_PASSWORD": "",
-             "DB_DIR": "", "PROCTOR_FOCUS": "", "MESA_DEBUG": "",
-             "SEED_STUDENTS": "", "AUTO_SEED": "", "LOAD_HOST": ""}
+    BLANK = {"PORT": "", "DEFAULT_STUDENT_PASSWORD": "", "DB_DIR": "",
+             "PROCTOR_FOCUS": "", "MESA_DEBUG": "", "SEED_STUDENTS": "",
+             "AUTO_SEED": "", "LOAD_HOST": "",
+             "ADMIN_PASSWORD_CHANDU": "", "ADMIN_PASSWORD_ANKUR": ""}
 
     def _run(self, code):
         import subprocess
@@ -150,12 +151,11 @@ class TestBlankEnvironmentVariables(unittest.TestCase):
             del os.environ["MESA_BLANK_TEST"]
 
     def test_server_imports_with_every_variable_blank(self):
-        r = self._run("import server; print(server.PORT, repr(server.ADMIN_KEY))")
+        r = self._run("import server; print(server.PORT)")
         self.assertEqual(r.returncode, 0,
                          f"server.py failed to import with blank env vars:\n"
                          f"{r.stderr}")
         self.assertIn("8000", r.stdout)
-        self.assertIn("change-me-admin", r.stdout)
 
     def test_entrypoint_imports_with_every_variable_blank(self):
         r = self._run(
@@ -167,17 +167,27 @@ class TestBlankEnvironmentVariables(unittest.TestCase):
         self.assertTrue(r.stdout.strip().startswith("/tmp/"),
                         f"blank DB_DIR must fall back to /tmp, got {r.stdout!r}")
 
-    def test_blank_admin_key_never_opens_the_dashboard(self):
+    def test_blank_admin_password_override_falls_back_to_the_list(self):
+        """An empty ADMIN_PASSWORD_* must not blank out an admin's password."""
         r = self._run(
-            "import server;"
-            "server.ADMIN_KEY = '';"
-            "assert server.admin_key_ok('') is False;"
-            "assert server.admin_key_ok('guess') is False;"
-            "server.ADMIN_KEY = 'real';"
-            "assert server.admin_key_ok('') is False;"
-            "assert server.admin_key_ok('real') is True;"
+            "import seed;"
+            "u, _, pw = seed.ADMINS[0];"
+            "resolved = seed.admin_password(u, pw);"
+            "assert resolved == pw, resolved;"
+            "assert resolved, 'admin password resolved to empty';"
             "print('ok')")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_admin_password_env_override_wins(self):
+        import subprocess
+        import sys
+        environ = dict(os.environ, ADMIN_PASSWORD_CHANDU="from-env")
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import seed; print(seed.admin_password('chandu', 'in-code'))"],
+            env=environ, cwd=BASE, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "from-env")
 
 
 class TestVercelConfig(unittest.TestCase):

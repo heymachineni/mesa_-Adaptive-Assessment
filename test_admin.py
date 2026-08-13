@@ -3,7 +3,7 @@
 Covers what a coordinator actually does: add one question, upload a batch as
 CSV or JSON, get a clear rejection when a file is malformed, retire a question
 so it stops being served without losing past results, and the fact that none
-of this is reachable without the admin key.
+of this is reachable without signing in as an admin.
 """
 import http.client
 import json
@@ -36,6 +36,22 @@ def setUpModule():
     _S["httpd"] = httpd
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     time.sleep(0.2)
+    _S["cookie"] = _sign_in(*seed.ADMINS[0][::2])      # (username, password)
+
+
+def _sign_in(username, password):
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.request("POST", "/admin/login",
+              urllib.parse.urlencode({"username": username,
+                                      "password": password}),
+              {"Content-Type": "application/x-www-form-urlencoded",
+               "Connection": "close"})
+    r = c.getresponse()
+    r.read()
+    raw = r.getheader("Set-Cookie", "")
+    c.close()
+    assert "mesa_admin=" in raw, f"admin sign-in failed: {r.status} {raw!r}"
+    return raw.split("mesa_admin=", 1)[1].split(";", 1)[0]
 
 
 def tearDownModule():
@@ -44,13 +60,14 @@ def tearDownModule():
 
 
 class Base(unittest.TestCase):
-    @property
-    def key(self):
-        return _S["server"].ADMIN_KEY
-
-    def req(self, method, path, body=None, ctype=None):
+    def req(self, method, path, body=None, ctype=None, auth=True,
+            cookie=None):
         c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
         headers = {"Connection": "close"}
+        if cookie:
+            headers["Cookie"] = cookie
+        elif auth:
+            headers["Cookie"] = f"mesa_admin={_S['cookie']}"
         if body is not None and ctype is None:
             body = urllib.parse.urlencode(body)
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -63,7 +80,7 @@ class Base(unittest.TestCase):
         c.close()
         return r.status, data, loc
 
-    def multipart(self, path, fields):
+    def multipart(self, path, fields, auth=True):
         b = "----MESATEST"
         parts = []
         for name, value in fields.items():
@@ -73,7 +90,7 @@ class Base(unittest.TestCase):
             parts[-1] += f"\r\n\r\n{value}\r\n"
         payload = "".join(parts) + f"--{b}--\r\n"
         return self.req("POST", path, payload,
-                        f"multipart/form-data; boundary={b}")
+                        f"multipart/form-data; boundary={b}", auth=auth)
 
     def db(self):
         con = sqlite3.connect(_S["seed"].DB_PATH, timeout=15)
@@ -87,30 +104,101 @@ class Base(unittest.TestCase):
         return n
 
 
-class TestAccessControl(Base):
-    def test_every_admin_route_needs_the_key(self):
-        for path in ("/admin", "/admin/leaderboard", "/admin/questions",
-                     "/admin/export.csv", "/admin/questions/template.csv",
-                     "/admin/questions/export.json"):
-            status, _, _ = self.req("GET", path)
-            self.assertEqual(status, 403, path)
-            status, _, _ = self.req("GET", f"{path}?key=nope")
-            self.assertEqual(status, 403, path)
+ADMIN_GETS = ("/admin", "/admin/students", "/admin/leaderboard",
+              "/admin/questions", "/admin/export.csv",
+              "/admin/questions/template.csv", "/admin/questions/export.json")
+ADMIN_POSTS = ("/admin/students/add", "/admin/students/reset",
+               "/admin/students/toggle", "/admin/questions/add",
+               "/admin/questions/upload", "/admin/questions/toggle")
 
-    def test_write_routes_reject_a_bad_key(self):
+
+class TestAccessControl(Base):
+    def test_every_admin_page_needs_a_session(self):
+        for path in ADMIN_GETS:
+            status, _, loc = self.req("GET", path, auth=False)
+            self.assertEqual(status, 303, path)
+            self.assertEqual(loc, "/admin/login", path)
+
+    def test_every_admin_action_needs_a_session(self):
         before = self.count_active()
-        status, _, _ = self.req("POST", "/admin/questions/add",
-                                {"key": "nope", "prompt": "x", "o1": "a", "o2": "b",
-                                 "o3": "c", "o4": "d", "answer": "1"})
-        self.assertEqual(status, 403)
+        for path in ADMIN_POSTS:
+            status, _, loc = self.req("POST", path, {"id": "1"}, auth=False)
+            self.assertEqual(status, 303, path)
+            self.assertEqual(loc, "/admin/login", path)
         self.assertEqual(self.count_active(), before)
+
+    def test_the_old_url_key_grants_nothing(self):
+        """The dashboard used to be ?key=… — that must no longer work."""
+        for key in ("change-me-admin", "mesa-admin-dev", "nope", ""):
+            status, _, loc = self.req("GET", f"/admin?key={key}", auth=False)
+            self.assertEqual(status, 303, key)
+            self.assertEqual(loc, "/admin/login", key)
+
+    def test_wrong_password_does_not_sign_in(self):
+        status, body, _ = self.req(
+            "POST", "/admin/login",
+            {"username": _S["seed"].ADMINS[0][0], "password": "wrong"},
+            auth=False)
+        self.assertIn("don&#x27;t match", body)
+        self.assertNotIn("mesa_admin=", body)
+
+    def test_unknown_username_is_indistinguishable(self):
+        _, known, _ = self.req("POST", "/admin/login",
+                               {"username": _S["seed"].ADMINS[0][0],
+                                "password": "wrong"}, auth=False)
+        _, unknown, _ = self.req("POST", "/admin/login",
+                                 {"username": "nobody", "password": "wrong"},
+                                 auth=False)
+        self.assertEqual(known, unknown)
+
+    def test_a_student_session_is_not_an_admin_session(self):
+        status, _, loc = self.req(
+            "POST", "/login", {"username": "student001", "password": "testpw"},
+            auth=False)
+        student = None
+        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+        c.request("POST", "/login",
+                  urllib.parse.urlencode({"username": "student001",
+                                          "password": "testpw"}),
+                  {"Content-Type": "application/x-www-form-urlencoded",
+                   "Connection": "close"})
+        r = c.getresponse()
+        r.read()
+        raw = r.getheader("Set-Cookie", "")
+        c.close()
+        student = raw.split(";", 1)[0]
+        self.assertTrue(student.startswith("mesa_session="))
+        status, _, loc = self.req("GET", "/admin", cookie=student)
+        self.assertEqual(status, 303)
+        self.assertEqual(loc, "/admin/login")
+
+    def test_sign_out_ends_the_session(self):
+        cookie = f"mesa_admin={_sign_in(*_S['seed'].ADMINS[0][::2])}"
+        status, _, _ = self.req("GET", "/admin", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.req("POST", "/admin/logout", {}, cookie=cookie)
+        status, _, loc = self.req("GET", "/admin", cookie=cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(loc, "/admin/login")
+
+    def test_all_configured_admins_can_sign_in(self):
+        for username, _name, password in _S["seed"].ADMINS:
+            cookie = f"mesa_admin={_sign_in(username, password)}"
+            status, body, _ = self.req("GET", "/admin", cookie=cookie)
+            self.assertEqual(status, 200, username)
+            self.assertIn("Attempts", body)
+
+    def test_dashboard_has_no_key_in_any_url(self):
+        for path in ("/admin", "/admin/students", "/admin/questions"):
+            _, body, _ = self.req("GET", path)
+            self.assertNotIn("key=", body, path)
 
 
 class TestAddQuestion(Base):
     def test_add_one_question_appears_in_the_pool(self):
         before = self.count_active()
         status, _, loc = self.req("POST", "/admin/questions/add", {
-            "key": self.key, "prompt": "Which metric best shows retention?",
+            "prompt": "Which metric best shows retention?",
             "difficulty": "medium", "topic": "product",
             "o1": "Downloads", "o2": "Week-4 return rate", "o3": "Page views",
             "o4": "Email opens", "answer": "2",
@@ -129,7 +217,7 @@ class TestAddQuestion(Base):
     def test_missing_field_is_rejected_with_a_message(self):
         before = self.count_active()
         status, _, loc = self.req("POST", "/admin/questions/add", {
-            "key": self.key, "prompt": "Incomplete", "o1": "a", "o2": "",
+            "prompt": "Incomplete", "o1": "a", "o2": "",
             "o3": "c", "o4": "d", "answer": "1"})
         self.assertEqual(status, 303)
         self.assertIn("Could not add", urllib.parse.unquote(loc))
@@ -188,7 +276,7 @@ class TestUploadOverHTTP(Base):
             "easy,sales,Upload test one,a,b,c,d,1\n"
             "medium,sales,Upload test two,a,b,c,d,3\n")
         status, _, loc = self.multipart("/admin/questions/upload",
-                                        {"key": self.key, "file": csv_text})
+                                        {"file": csv_text})
         self.assertEqual(status, 303)
         self.assertIn("Added 2", urllib.parse.unquote(loc))
         self.assertEqual(self.count_active(), before + 2)
@@ -199,15 +287,14 @@ class TestUploadOverHTTP(Base):
                                "prompt": "Pasted json question",
                                "options": ["a", "b", "c", "d"], "answer_index": 0}])
         status, _, loc = self.multipart("/admin/questions/upload",
-                                        {"key": self.key, "pasted": payload})
+                                        {"pasted": payload})
         self.assertEqual(status, 303)
         self.assertEqual(self.count_active(), before + 1)
 
     def test_bad_file_saves_nothing(self):
         before = self.count_active()
         status, _, loc = self.multipart("/admin/questions/upload", {
-            "key": self.key,
-            "file": ("difficulty,topic,prompt,option1,option2,option3,option4,answer\n"
+                        "file": ("difficulty,topic,prompt,option1,option2,option3,option4,answer\n"
                      "wrong,ai,Bad,a,b,c,d,1\n")})
         self.assertEqual(status, 303)
         self.assertIn("Nothing was saved", urllib.parse.unquote(loc))
@@ -222,7 +309,7 @@ class TestRetire(Base):
         con.close()
         before = self.count_active()
         status, _, loc = self.req("POST", "/admin/questions/toggle",
-                                  {"key": self.key, "id": qid})
+                                  {"id": qid})
         self.assertEqual(status, 303)
         self.assertIn("retired", urllib.parse.unquote(loc))
         self.assertEqual(self.count_active(), before - 1)
@@ -238,13 +325,13 @@ class TestRetire(Base):
         con.close()
         self.assertNotIn(qid, pool)
         # restore
-        self.req("POST", "/admin/questions/toggle", {"key": self.key, "id": qid})
+        self.req("POST", "/admin/questions/toggle", {"id": qid})
         self.assertEqual(self.count_active(), before)
 
 
 class TestTemplatesAndDashboard(Base):
     def test_csv_template_downloads_and_round_trips(self):
-        status, body, _ = self.req("GET", f"/admin/questions/template.csv?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin/questions/template.csv")
         self.assertEqual(status, 200)
         self.assertIn("difficulty", body.splitlines()[0])
         rows, errors = _S["server"].Handler.parse_question_upload(body)
@@ -252,13 +339,13 @@ class TestTemplatesAndDashboard(Base):
         self.assertEqual(len(rows), 2)
 
     def test_bank_export_is_valid_json(self):
-        status, body, _ = self.req("GET", f"/admin/questions/export.json?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin/questions/export.json")
         self.assertEqual(status, 200)
         data = json.loads(body)
         self.assertTrue(all("prompt" in q and "options" in q for q in data))
 
     def test_dashboard_renders_stats(self):
-        status, body, _ = self.req("GET", f"/admin?key={self.key}")
+        status, body, _ = self.req("GET", f"/admin")
         self.assertEqual(status, 200)
         for label in ("In progress", "Finished", "Cohort accuracy", "Left the window"):
             self.assertIn(label, body)
