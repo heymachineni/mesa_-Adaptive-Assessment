@@ -89,6 +89,15 @@ class TestRuntimeCompatibility(unittest.TestCase):
 
 
 class TestVercelConfig(unittest.TestCase):
+    """Zero-config (`functions` + `rewrites`) is the shape that works here.
+
+    `builds` is the legacy alternative. It turns zero-config off, ignores
+    `rewrites`, and its `routes` rewrite the request path rather than passing
+    the original URL through — which served a platform 404 on every route
+    when it was tried. Mixing the two shapes is the failure mode these tests
+    exist to catch.
+    """
+
     def setUp(self):
         with open(os.path.join(BASE, "vercel.json")) as f:
             self.cfg = json.load(f)
@@ -97,15 +106,30 @@ class TestVercelConfig(unittest.TestCase):
         for build in self.cfg.get("builds", []):
             self.assertTrue(os.path.exists(os.path.join(BASE, build["src"])),
                             f"vercel.json builds {build['src']}, which is missing")
+        for pattern in self.cfg.get("functions", {}):
+            self.assertTrue(os.path.exists(os.path.join(BASE, pattern)),
+                            f"vercel.json configures {pattern}, which is missing")
 
-    def test_routing_is_a_catch_all_to_the_entrypoint(self):
-        # `builds` disables zero-config, so `rewrites` would be ignored.
+    def test_one_routing_shape_only(self):
         if self.cfg.get("builds"):
             self.assertNotIn("rewrites", self.cfg,
-                             "rewrites are ignored when builds is present; "
-                             "use routes")
-            dests = [r.get("dest") for r in self.cfg.get("routes", [])]
-            self.assertIn("/api/index", dests)
+                             "rewrites are ignored when builds is present")
+            self.assertNotIn("functions", self.cfg,
+                             "functions and builds cannot be combined")
+        else:
+            self.assertNotIn("routes", self.cfg,
+                             "routes is the legacy pairing for builds; "
+                             "zero-config uses rewrites")
+
+    def test_every_path_reaches_the_entrypoint(self):
+        if self.cfg.get("builds"):
+            rules = [(r.get("src"), r.get("dest"))
+                     for r in self.cfg.get("routes", [])]
+        else:
+            rules = [(r.get("source"), r.get("destination"))
+                     for r in self.cfg.get("rewrites", [])]
+        self.assertIn(("/(.*)", "/api/index"), rules,
+                      f"no catch-all to the entrypoint; found {rules}")
 
 
 if __name__ == "__main__":

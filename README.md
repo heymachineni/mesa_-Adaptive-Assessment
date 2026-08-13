@@ -185,22 +185,29 @@ routes every path to it. Without those two files Vercel finds no framework
 and no `index.html`, treats the repo as a static site with nothing to serve,
 and answers **404 on every route**.
 
-`vercel.json` declares the builder explicitly rather than relying on
-auto-detection:
+`vercel.json` uses zero-config — `functions` for the bundle and `rewrites`
+for routing:
 
 ```json
-{ "builds": [{ "src": "api/index.py", "use": "@vercel/python",
-               "config": { "includeFiles": "**" } }],
-  "routes": [{ "src": "/(.*)", "dest": "/api/index" }] }
+{ "functions": { "api/index.py": { "includeFiles": "**" } },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }] }
 ```
 
-The earlier `functions` form failed to deploy with *"The pattern
-`api/index.py` defined in `functions` doesn't match any Serverless Functions
-inside the `api` directory"* — Vercel's auto-detection found no function to
-attach the config to. Naming the builder removes the guesswork. Note that
-`builds` turns off zero-config, so routing must use `routes`, not `rewrites`;
 `includeFiles` keeps `questions.json`, `config.json` and `assets/` in the
-bundle.
+bundle. `rewrites` passes the original URL through, so the server still sees
+`/exam` rather than `/api/index`.
+
+**Don't switch this to `builds`.** It looks like the more explicit option and
+it isn't: `builds` turns zero-config off, silently ignores `rewrites`, and its
+`routes` rewrite the request path instead of passing the original URL — which
+served a platform 404 on every route when it was tried. Two deploy failures
+that looked like config problems (*"the pattern `api/index.py` … doesn't match
+any Serverless Functions"* and *"Could not find a top-level app, application,
+or handler"*) were both the same bug: `handler` had been nested inside an
+`if/else` in `api/index.py`, so Vercel's build-time scan couldn't see it, and
+a file with no visible entrypoint is not a Serverless Function. Fixing the
+entrypoint fixed both. `test_deploy.py` now guards the entrypoint and rejects
+mixed routing shapes.
 
 Set these in **Project → Settings → Environment Variables**:
 
@@ -255,7 +262,7 @@ respected.
 ## Tests
 
 ```
-python3 -m unittest -v     # 72 tests
+python3 -m unittest -v     # 73 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```
