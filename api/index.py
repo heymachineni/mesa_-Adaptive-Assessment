@@ -77,8 +77,59 @@ def _bootstrap():
         _seeded = True
 
 
+# Everything import-time needs to find next to server.py. If any of these are
+# absent the deployment bundle is incomplete, which is by far the likeliest
+# reason a cold start dies.
+REQUIRED_FILES = ("server.py", "seed.py", "adaptive_engine.py",
+                  "config.json", "questions.json")
+
+
+def _bundle_report():
+    """Which required files actually made it into the deployment."""
+    lines, missing = [], []
+    for name in REQUIRED_FILES:
+        ok = os.path.exists(os.path.join(ROOT, name))
+        lines.append(f"  {'ok     ' if ok else 'MISSING'}  {name}")
+        if not ok:
+            missing.append(name)
+    return "\n".join(lines), missing
+
+
+def _startup_failure(detail):
+    """Always shown when the app can't import — no MESA_DEBUG needed.
+
+    A blank 'it failed' page costs a redeploy to learn anything, so this says
+    what broke and whether the data files are present. It deliberately stops
+    short of the full traceback, which stays behind MESA_DEBUG.
+    """
+    cause = (detail.strip().splitlines() or ["unknown error"])[-1]
+    report, missing = _bundle_report()
+    try:
+        listing = ", ".join(sorted(os.listdir(ROOT))) or "<empty>"
+    except Exception as exc:            # noqa: BLE001
+        listing = f"<could not list {ROOT}: {exc}>"
+    out = [
+        "The exam server failed to start.",
+        "",
+        f"Cause:  {cause}",
+        f"Python: {sys.version.split()[0]}",
+        f"Root:   {ROOT}",
+        "",
+        "Required files:",
+        report,
+        "",
+        f"Everything at root: {listing}",
+    ]
+    if missing:
+        out += ["",
+                f"{len(missing)} required file(s) missing, so the deployment",
+                "bundle is incomplete — check `includeFiles` in vercel.json."]
+    out += ["", "Full traceback: Vercel -> Runtime Logs, or set MESA_DEBUG=1."]
+    return "\n".join(out) + "\n"
+
+
 def _diagnostics(detail):
-    """What we know about the bundle, to explain a failed cold start."""
+    """Full detail, gated behind MESA_DEBUG: tracebacks leak paths and config."""
     try:
         listing = "\n".join(sorted(os.listdir(ROOT)))
     except Exception as exc:            # noqa: BLE001
@@ -128,12 +179,8 @@ class handler(_Base):
 
     def _serve(self, method_name):
         if _import_error is not None:
-            body = ("The exam server failed to start.\n\n"
-                    "Set MESA_DEBUG=1 in your Vercel environment variables\n"
-                    "and redeploy to see the traceback here, or read it now\n"
-                    "in Vercel -> your project -> Runtime Logs.\n")
             return self._plain(500, _diagnostics(_import_error) if DEBUG
-                               else body)
+                               else _startup_failure(_import_error))
         try:
             _bootstrap()
             self._normalize()

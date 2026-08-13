@@ -262,7 +262,7 @@ respected.
 ## Tests
 
 ```
-python3 -m unittest -v     # 73 tests
+python3 -m unittest -v     # 75 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```

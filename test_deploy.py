@@ -64,6 +64,35 @@ class TestVercelEntrypoint(unittest.TestCase):
                             f"handler must answer {verb}")
 
 
+class TestStartupFailureIsLegible(unittest.TestCase):
+    """A blank 'it failed' page costs a redeploy to learn anything."""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, os.path.join(BASE, "api"))
+        sys.path.insert(0, BASE)
+        os.environ.setdefault("DB_DIR", "/tmp")
+        import index
+        self.index = index
+
+    def test_page_names_the_cause_and_the_missing_file(self):
+        fake = ("Traceback (most recent call last):\n"
+                "  File \"seed.py\", line 30, in level_names\n"
+                "FileNotFoundError: [Errno 2] No such file or directory: "
+                "'/var/task/config.json'")
+        page = self.index._startup_failure(fake)
+        self.assertIn("FileNotFoundError", page)
+        self.assertIn("config.json", page)
+        self.assertIn("Required files:", page)
+
+    def test_every_import_time_dependency_is_listed(self):
+        """If server.py starts reading a new file at import, list it here."""
+        for name in ("server.py", "seed.py", "adaptive_engine.py",
+                     "config.json", "questions.json"):
+            self.assertIn(name, self.index.REQUIRED_FILES)
+            self.assertTrue(os.path.exists(os.path.join(BASE, name)))
+
+
 class TestRuntimeCompatibility(unittest.TestCase):
     def test_no_backslash_inside_fstring_expressions(self):
         """Legal only from 3.12. Vercel's runtime may be older."""
