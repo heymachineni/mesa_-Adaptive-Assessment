@@ -215,6 +215,13 @@ Runs on any Python from 3.9 up, so whichever runtime Vercel picks will work.
 which is a syntax error before 3.12 and crashed the function with
 `FUNCTION_INVOCATION_FAILED` on Vercel's older runtime. Fixed.)
 
+`handler` must stay at the **top level** of `api/index.py`. Vercel finds it by
+parsing the file at build time and walking only the module's direct children,
+so a class defined inside an `if` or `try` is invisible to it and the build
+fails with *"Could not find a top-level app, application, or handler"*.
+`test_deploy.py` asserts this, along with the Python 3.9 syntax rule and the
+`vercel.json` wiring — all three are mistakes that only surface after a push.
+
 **If a deploy fails**, the function reports why instead of dying silently. The
 traceback always goes to **Runtime Logs**; set `MESA_DEBUG=1` to also see it
 in the response body. Turn that back off afterwards — tracebacks leak paths
@@ -248,7 +255,7 @@ respected.
 ## Tests
 
 ```
-python3 -m unittest -v     # 61 tests
+python3 -m unittest -v     # 72 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```
@@ -258,7 +265,9 @@ non-repetition · HTTP security (wrong question, replay, expiry) · session
 persistence and resume · the no-results guarantee ·
 no-JavaScript fallback · focus events · leaderboard ranking and access control ·
 concurrent students · question add, upload, validation, retire, templates ·
-student add, password reset, deactivation and re-activation, access control.
+student add, password reset, deactivation and re-activation, access control ·
+a four-level ladder built from config alone · the legacy config shape ·
+capped vs open-ended exams · and the deployment guards in `test_deploy.py`.
 
 ---
 
