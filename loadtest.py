@@ -20,9 +20,11 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
-HOST = os.environ.get("LOAD_HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", "8000"))
-PASSWORD = os.environ.get("DEFAULT_STUDENT_PASSWORD", "mesa-demo-2026")
+from seed import env, env_int          # blank env vars count as unset
+
+HOST = env("LOAD_HOST", "127.0.0.1")
+PORT = env_int("PORT", 8000)
+PASSWORD = env("DEFAULT_STUDENT_PASSWORD", "mesa-demo-2026")
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mesa.db")
 
 lock = threading.Lock()

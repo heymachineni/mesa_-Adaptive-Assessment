@@ -38,9 +38,14 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 # Must be set before `seed` is imported: seed.DB_PATH is read at import time.
-os.environ.setdefault("DB_DIR", "/tmp")
+# setdefault is not enough — it keeps an existing *blank* value, and a blank
+# DB_DIR would resolve the database to a relative path inside the read-only
+# deployment directory. Treat blank as unset, the same as seed.env does.
+if not (os.environ.get("DB_DIR") or "").strip():
+    os.environ["DB_DIR"] = "/tmp"
 
-DEBUG = os.environ.get("MESA_DEBUG", "").strip() in ("1", "true", "on")
+DEBUG = (os.environ.get("MESA_DEBUG") or "").strip().lower() in (
+    "1", "true", "on", "yes")
 
 _import_error = None
 storage = None

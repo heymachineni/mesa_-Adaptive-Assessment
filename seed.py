@@ -13,8 +13,35 @@ import secrets
 import sqlite3
 import sys
 
-DB_PATH = os.path.join(os.environ.get("DB_DIR", os.path.dirname(__file__)),
-                       "mesa.db")
+def env(name, default=""):
+    """Read an environment variable, treating a blank value as unset.
+
+    os.environ.get() only falls back to its default when the key is *absent*.
+    Hosting dashboards routinely create a variable with an empty value, and
+    that empty string then flows straight into the app. On Vercel a blank
+    PORT turned int(os.environ.get("PORT", "8000")) into int("") and killed
+    the whole deployment at import. Blank means "not set" everywhere here.
+    """
+    raw = os.environ.get(name)
+    return default if raw is None or not raw.strip() else raw.strip()
+
+
+def env_int(name, default):
+    """Same, and never raises on a non-numeric value."""
+    try:
+        return int(env(name, ""))
+    except ValueError:
+        return default
+
+
+def env_flag(name, default=True):
+    """Same, for on/off switches."""
+    return env(name, "on" if default else "off").lower() not in (
+        "0", "off", "false", "no")
+
+
+DB_PATH = os.path.join(
+    env("DB_DIR", os.path.dirname(os.path.abspath(__file__))), "mesa.db")
 
 
 def level_names():
@@ -155,7 +182,7 @@ def main():
     con = connect()
     con.executescript(SCHEMA)
 
-    default_pw = os.environ.get("DEFAULT_STUDENT_PASSWORD", "mesa-demo-2026")
+    default_pw = env("DEFAULT_STUDENT_PASSWORD", "mesa-demo-2026")
     roster = list(DEMO_STUDENTS)
     # --students N  adds N extra accounts (student005...) for a real cohort
     if "--students" in sys.argv:

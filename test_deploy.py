@@ -117,6 +117,69 @@ class TestRuntimeCompatibility(unittest.TestCase):
                          "\n".join(offenders))
 
 
+class TestBlankEnvironmentVariables(unittest.TestCase):
+    """A hosting dashboard variable created with an empty value reads as unset.
+
+    os.environ.get() only falls back when the key is *absent*. A blank PORT on
+    Vercel therefore produced int("") and killed the deployment at import.
+    """
+
+    BLANK = {"PORT": "", "ADMIN_KEY": "", "DEFAULT_STUDENT_PASSWORD": "",
+             "DB_DIR": "", "PROCTOR_FOCUS": "", "MESA_DEBUG": "",
+             "SEED_STUDENTS": "", "AUTO_SEED": "", "LOAD_HOST": ""}
+
+    def _run(self, code):
+        import subprocess
+        import sys
+        environ = dict(os.environ, **self.BLANK)
+        return subprocess.run([sys.executable, "-c", code], env=environ,
+                              cwd=BASE, capture_output=True, text=True)
+
+    def test_helpers_treat_blank_as_unset(self):
+        from seed import env, env_flag, env_int
+        os.environ["MESA_BLANK_TEST"] = "   "
+        try:
+            self.assertEqual(env("MESA_BLANK_TEST", "fallback"), "fallback")
+            self.assertEqual(env_int("MESA_BLANK_TEST", 8000), 8000)
+            self.assertTrue(env_flag("MESA_BLANK_TEST", True))
+            os.environ["MESA_BLANK_TEST"] = "not-a-number"
+            self.assertEqual(env_int("MESA_BLANK_TEST", 8000), 8000)
+            os.environ["MESA_BLANK_TEST"] = "off"
+            self.assertFalse(env_flag("MESA_BLANK_TEST", True))
+        finally:
+            del os.environ["MESA_BLANK_TEST"]
+
+    def test_server_imports_with_every_variable_blank(self):
+        r = self._run("import server; print(server.PORT, repr(server.ADMIN_KEY))")
+        self.assertEqual(r.returncode, 0,
+                         f"server.py failed to import with blank env vars:\n"
+                         f"{r.stderr}")
+        self.assertIn("8000", r.stdout)
+        self.assertIn("change-me-admin", r.stdout)
+
+    def test_entrypoint_imports_with_every_variable_blank(self):
+        r = self._run(
+            "import sys; sys.path.insert(0, 'api'); import index;"
+            "assert index._import_error is None, index._import_error;"
+            "print(index.storage.DB_PATH)")
+        self.assertEqual(r.returncode, 0,
+                         f"api/index.py failed with blank env vars:\n{r.stderr}")
+        self.assertTrue(r.stdout.strip().startswith("/tmp/"),
+                        f"blank DB_DIR must fall back to /tmp, got {r.stdout!r}")
+
+    def test_blank_admin_key_never_opens_the_dashboard(self):
+        r = self._run(
+            "import server;"
+            "server.ADMIN_KEY = '';"
+            "assert server.admin_key_ok('') is False;"
+            "assert server.admin_key_ok('guess') is False;"
+            "server.ADMIN_KEY = 'real';"
+            "assert server.admin_key_ok('') is False;"
+            "assert server.admin_key_ok('real') is True;"
+            "print('ok')")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+
 class TestVercelConfig(unittest.TestCase):
     """Zero-config (`functions` + `rewrites`) is the shape that works here.
 

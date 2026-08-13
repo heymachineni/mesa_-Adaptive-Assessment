@@ -170,6 +170,13 @@ like Vercel you set them in the dashboard instead.
 
 `server.py` prints a warning on startup while `ADMIN_KEY` is still a default.
 
+**A variable that exists but is blank counts as unset.** `os.environ.get()`
+only falls back when a key is *absent*, so a dashboard variable created with
+an empty value returns `""` — which is how a blank `PORT` became `int("")`
+and killed a Vercel deploy at import. Every read goes through `seed.env`,
+`env_int` and `env_flag`, which treat blank as missing, so a stray empty
+variable can't take the app down or silently blank out the admin key.
+
 ---
 
 ## Deploying to Vercel
@@ -262,7 +269,7 @@ respected.
 ## Tests
 
 ```
-python3 -m unittest -v     # 75 tests
+python3 -m unittest -v     # 79 tests
 python3 simulate.py        # 5 student archetypes through the real engine
 python3 loadtest.py 120    # cohort load (server must be running)
 ```
@@ -393,7 +400,9 @@ exam length.
 - **Plain HTTP on a LAN** — fine for a supervised classroom, needs HTTPS for
   internet-facing use.
 - **POC-grade security**: no CSRF tokens, no rate limiting, SHA-256+salt
-  hashing. The admin key travels in the URL — don't screen-share it.
+  hashing. The admin key travels in the URL — don't screen-share it. It is
+  compared with `secrets.compare_digest`, and a blank key is always rejected
+  rather than matching an absent one.
 - **Focus tracking is a deterrent**, not lockdown: it records that a student
   left the window; it cannot stop them.
 - **SQLite.** Verified to 120 concurrent; beyond a few hundred, move to Postgres.

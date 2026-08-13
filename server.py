@@ -44,8 +44,10 @@ def load_env():
 load_env()
 CONFIG = json.load(open(os.path.join(BASE, "config.json")))
 ENGINE = AdaptiveEngine(CONFIG)
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "change-me-admin")
-PORT = int(os.environ.get("PORT", "8000"))
+# storage.env treats a blank environment variable as unset. A dashboard that
+# creates PORT with an empty value would otherwise crash this import.
+ADMIN_KEY = storage.env("ADMIN_KEY", "change-me-admin")
+PORT = storage.env_int("PORT", 8000)
 DURATION = CONFIG["exam"]["durationMinutes"] * 60
 # None when config sets maxQuestions to null: the exam has no fixed length and
 # students answer as many as they can until the clock or the bank runs out.
@@ -57,7 +59,7 @@ SESSION_MAX_AGE = 12 * 3600          # survives a closed browser / dead laptop
 # Browser-level proctoring: log when the exam window loses focus. Works in
 # every browser, needs no install. A deterrent and an audit trail — NOT
 # lockdown. Students are told about it on the instructions screen.
-PROCTOR_FOCUS = os.environ.get("PROCTOR_FOCUS", "on").strip().lower() != "off"
+PROCTOR_FOCUS = storage.env_flag("PROCTOR_FOCUS", True)
 
 STYLE = """
 <style>
@@ -342,6 +344,18 @@ def page(body, who="", title=None, wide=False):
 def fmt_clock(seconds):
     m, s = divmod(max(0, int(seconds)), 60)
     return f"{m}:{s:02d}"
+
+
+def admin_key_ok(supplied):
+    """Constant-time admin key check that refuses to accept nothing.
+
+    Guards against a blank ADMIN_KEY: an empty configured key compared
+    against an absent ?key= would match, opening the dashboard and the
+    results export to anyone who found the URL.
+    """
+    if not ADMIN_KEY or not supplied:
+        return False
+    return secrets.compare_digest(str(supplied), str(ADMIN_KEY))
 
 
 def answered_line(done):
@@ -892,7 +906,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(page(body, html.escape(s["name"])))
     # ---------------- admin ----------------
     def _require_admin(self, qs):
-        if qs.get("key", [""])[0] != ADMIN_KEY:
+        if not admin_key_ok(qs.get("key", [""])[0]):
             self._send(page('<div class="card"><h1>Admin key required</h1>'
                             '<p class="lede">This dashboard needs your admin '
                             'key. Add <span class="mono">?key=…</span> to the '
@@ -1160,7 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_student_add(self, con):
         f = self._form()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         username = f.get("username", "").strip().lower()
@@ -1189,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_student_reset(self, con):
         f = self._form()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         sid = f.get("id", "")
@@ -1208,7 +1222,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_student_toggle(self, con):
         f = self._form()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         sid = f.get("id", "")
@@ -1352,7 +1366,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_question_add(self, con):
         f = self._form()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         try:
@@ -1460,7 +1474,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_question_upload(self, con):
         f = self._parse_multipart()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         text = (f.get("file") or "").strip() or (f.get("pasted") or "")
@@ -1485,7 +1499,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def act_question_toggle(self, con):
         f = self._form()
-        if f.get("key") != ADMIN_KEY:
+        if not admin_key_ok(f.get("key", "")):
             return self._send(page('<div class="card"><h1>Admin key required</h1></div>'),
                               403)
         qid = f.get("id", "")
