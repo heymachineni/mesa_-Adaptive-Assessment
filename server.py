@@ -47,7 +47,10 @@ ENGINE = AdaptiveEngine(CONFIG)
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "change-me-admin")
 PORT = int(os.environ.get("PORT", "8000"))
 DURATION = CONFIG["exam"]["durationMinutes"] * 60
-MAXQ = CONFIG["exam"]["maxQuestions"]
+# None when config sets maxQuestions to null: the exam has no fixed length and
+# students answer as many as they can until the clock or the bank runs out.
+MAXQ = ENGINE.max_questions
+LEVELS = ENGINE.names             # the difficulty ladder, straight from config
 TITLE = CONFIG["exam"]["title"]
 SESSION_MAX_AGE = 12 * 3600          # survives a closed browser / dead laptop
 
@@ -341,6 +344,13 @@ def fmt_clock(seconds):
     return f"{m}:{s:02d}"
 
 
+def answered_line(done):
+    """'12 answered' — or '12 of 30 answered' when a cap is configured."""
+    if MAXQ:
+        return f"{done} of {MAXQ} answered"
+    return f"{done} answered" if done != 1 else "1 answered"
+
+
 # Database enum values are for the database. Admins read plain English.
 STATUS_LABEL = {
     "active": "In progress",
@@ -607,8 +617,8 @@ class Handler(BaseHTTPRequestHandler):
             <h1>Welcome back</h1>
             <p class="lede">Every answer you submitted is saved. Your time
             kept running while you were away.</p>
-            <div class="rail">{self._rail(done, MAXQ)}</div>
-            <div class="status"><span>{done} of {MAXQ} answered</span>
+            {self._rail_block(done)}
+            <div class="status"><span>{answered_line(done)}</span>
             <span class="clock">{left} left</span></div>
             <form method="post" action="/start">
             <button class="btn wide">Resume exam</button></form></div>"""
@@ -630,6 +640,12 @@ class Handler(BaseHTTPRequestHandler):
             ("One question at a time",
              "No going back, no skipping ahead. Once you move on, that "
              "question is behind you."),
+            ("Answer as many as you can" if not MAXQ else "A fixed set",
+             f"There's no set number to get through. Keep going for the full "
+             f"{mins} minutes and answer as many as you're able — the exam "
+             f"ends when your time is up."
+             if not MAXQ else
+             f"You'll be given {MAXQ} questions."),
             ("Answers are final",
              "Submitting locks that answer in. Take the moment you need "
              "before you commit."),
@@ -659,8 +675,8 @@ class Handler(BaseHTTPRequestHandler):
             for i, (t, d) in enumerate(rules, 1))
         body = f"""<div class="card">
         <h1>Before you begin</h1>
-        <p class="lede">{MAXQ} questions, {mins} minutes. Here's how it
-        works.</p>
+        <p class="lede">{f'{MAXQ} questions, ' if MAXQ else ''}{mins} minutes.
+        Here's how it works.</p>
         <div class="rows">{rows}</div>
         <hr class="rule">
         <form method="post" action="/start">
@@ -701,6 +717,14 @@ class Handler(BaseHTTPRequestHandler):
                 out.append('<span class="tick"></span>')
         return "".join(out)
 
+    def _rail_block(self, done, current=True):
+        """A rail measures progress towards an end. With no fixed length there
+        is no end to measure towards, so we show nothing rather than a bar
+        that fills up against an invented total."""
+        if not MAXQ:
+            return ""
+        return f'<div class="rail">{self._rail(done, MAXQ, current)}</div>'
+
     def page_exam(self, con):
         s = self._require_student(con)
         if not s:
@@ -737,8 +761,8 @@ class Handler(BaseHTTPRequestHandler):
     if(document.hidden){away++;beacon('blur');}else{beacon('return');}});
 """ if PROCTOR_FOCUS else ""
         body = f"""<div class="card">
-        <div class="rail">{self._rail(att['answered_count'], MAXQ)}</div>
-        <div class="status"><span>Question {num} of {MAXQ}</span>
+        {self._rail_block(att['answered_count'])}
+        <div class="status"><span>Question {num}{f' of {MAXQ}' if MAXQ else ''}</span>
         <span class="clock" id="clock">{fmt_clock(remaining)}</span></div>
         <p class="prompt">{html.escape(q['prompt'])}</p>{figure}
         <form method="post" action="/answer" id="f">
@@ -841,18 +865,25 @@ class Handler(BaseHTTPRequestHandler):
         att = latest_attempt(con, s["id"])
         if att and att["status"] == "active" and not check_expiry(con, att):
             return self._redirect("/exam")
-        expired = att and att["status"] == "expired"
-        headline = "Time's up" if expired else "All done"
-        lede = ("Everything you submitted before the clock ran out has been "
-                "saved." if expired else
-                "Your answers have been saved. You can close this window.")
+        status = att["status"] if att else ""
+        if status == "expired":
+            headline = "Time's up"
+            lede = ("Everything you submitted before the clock ran out has "
+                    "been saved.")
+        elif status == "exhausted":
+            headline = "You've answered everything"
+            lede = ("You reached the end of the question bank with time to "
+                    "spare. Your answers have been saved.")
+        else:
+            headline = "All done"
+            lede = "Your answers have been saved. You can close this window."
         n = att["answered_count"] if att else 0
         body = f"""<div class="card">
         <div class="done-mark">✓</div>
         <h1>{headline}</h1>
         <p class="lede">{lede}</p>
-        <div class="rail">{self._rail(n, MAXQ, current=False)}</div>
-        <div class="status"><span>{n} of {MAXQ} answered</span><span></span></div>
+        {self._rail_block(n, current=False)}
+        <div class="status"><span>{answered_line(n)}</span><span></span></div>
         <p class="note">No result is shown here, and none was shown during
         the exam. Results are released by your coordinator once everyone has
         finished.</p>
@@ -917,6 +948,8 @@ class Handler(BaseHTTPRequestHandler):
                              "AND kind='blur'", (r["id"],)).fetchone()["c"]
             pct = (f"{round(100 * r['score'] / r['answered_count'])}%"
                    if r["answered_count"] else "—")
+            count_cell = (f"{r['answered_count']}/{MAXQ}" if MAXQ
+                          else r["answered_count"])
             if r["status"] == "active" and r["deadline"] > now:
                 state = f'<span class="pill live">{fmt_clock(r["deadline"] - now)} left</span>'
             else:
@@ -927,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
             trs += (f"<tr><td><a href='/admin/attempt?key={key}&id={r['id']}'>"
                     f"{html.escape(r['name'])}</a></td>"
                     f"<td>{state}</td>"
-                    f"<td class='mono'>{r['answered_count']}/{MAXQ}</td>"
+                    f"<td class='mono'>{count_cell}</td>"
                     f"<td class='mono'>{pct}</td>"
                     f"<td>{json.loads(r['adaptive_state_json'])['difficulty'].capitalize()}</td>"
                     f"<td>{flag}</td></tr>")
@@ -1200,7 +1233,7 @@ class Handler(BaseHTTPRequestHandler):
 
         counts = {d: con.execute(
             "SELECT COUNT(*) c FROM questions WHERE difficulty=? AND active=1",
-            (d,)).fetchone()["c"] for d in ("easy", "medium", "hard")}
+            (d,)).fetchone()["c"] for d in LEVELS}
         topics = sorted({t for r in con.execute("SELECT topics_json FROM questions")
                          for t in json.loads(r["topics_json"])})
 
@@ -1256,7 +1289,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class="grid2">
         <div class="field"><label class="lbl">Difficulty</label>
         <select name="difficulty">
-        <option>easy</option><option>medium</option><option>hard</option></select></div>
+        {''.join(f'<option>{html.escape(lv)}</option>' for lv in LEVELS)}</select></div>
         <div class="field"><label class="lbl">Topic</label>
         <select name="topic">{''.join(f'<option>{t}</option>' for t in topics)}</select></div>
         </div>
@@ -1297,7 +1330,7 @@ class Handler(BaseHTTPRequestHandler):
 
         <form method="get" action="/admin/questions" class="bar">
         <input type="hidden" name="key" value="{key}">
-        <select name="difficulty">{opts('levels', ['easy', 'medium', 'hard'], diff)}</select>
+        <select name="difficulty">{opts('levels', LEVELS, diff)}</select>
         <select name="topic">{opts('topics', topics, topic)}</select>
         <select name="show">
         <option value="active"{' selected' if show == 'active' else ''}>Active</option>
@@ -1414,8 +1447,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:             # noqa: BLE001
                     errors.append(f"Line {i}: {e}")
         for i, q in enumerate(rows, 1):
-            if q["difficulty"] not in ("easy", "medium", "hard"):
-                errors.append(f"Row {i}: difficulty must be easy, medium or hard")
+            if q["difficulty"] not in LEVELS:
+                errors.append(f"Row {i}: difficulty must be one of "
+                              f"{', '.join(LEVELS)}")
             if len(q["options"]) != 4 or not all(q["options"]):
                 errors.append(f"Row {i}: exactly four non-empty options are required")
             if not q["prompt"]:

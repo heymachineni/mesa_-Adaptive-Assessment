@@ -137,7 +137,7 @@ class TestSessionPersistence(Base):
         status, body, _, _ = self.req("GET", "/home", cookie=token2)
         self.assertIn("Welcome back", body)
         self.assertIn(">Resume exam<", body)
-        self.assertIn("1 of 30 answered", body)
+        self.assertIn("1 answered", body)      # no fixed length to count against
         status, _, _, loc = self.req("POST", "/start", {}, cookie=token2)
         self.assertEqual(loc, "/exam")
         self.assertEqual(self.current_qid("student003"), qid_before)
@@ -201,9 +201,18 @@ class TestStudentSeesNoResults(Base):
         token = self.login("student006")
         status, body, _, _ = self.req("GET", "/instructions", cookie=token)
         self.assertEqual(status, 200)
-        for promise in ("30 questions", "No going back", "saves automatically",
+        for promise in ("30 minutes", "No going back", "saves automatically",
                         "released by your coordinator"):
             self.assertIn(promise, body)
+
+    def test_instructions_do_not_promise_a_question_count(self):
+        """The exam is open-ended: never tell a student how many to expect."""
+        token = self.login("student009")
+        status, body, _, _ = self.req("GET", "/instructions", cookie=token)
+        self.assertIn("no set number", body.lower())
+        self.assertNotIn("30 questions", body)
+        for n in ("of 30", "of 90"):
+            self.assertNotIn(n, body)
 
 
 class TestNoJavaScriptFallback(Base):

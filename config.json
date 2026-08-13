@@ -1,14 +1,15 @@
 {
   "adaptive": {
-    "startingDifficulty": "easy",
-    "easyToMediumCorrectThreshold": 3,
-    "mediumToHardCorrectThreshold": 2,
-    "hardToMediumWrongThreshold": 1,
-    "mediumToEasyWrongThreshold": 2
+    "startingLevel": "easy",
+    "levels": [
+      { "name": "easy",   "promoteAfterCorrect": 3 },
+      { "name": "medium", "promoteAfterCorrect": 2, "demoteAfterWrong": 2 },
+      { "name": "hard",                             "demoteAfterWrong": 1 }
+    ]
   },
   "exam": {
     "title": "MESA Adaptive Assessment",
-    "maxQuestions": 30,
+    "maxQuestions": null,
     "durationMinutes": 30
   },
   "blueprint": {

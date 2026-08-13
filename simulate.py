@@ -19,6 +19,9 @@ CONFIG = json.load(open(os.path.join(BASE, "config.json")))
 QUESTIONS = json.load(open(os.path.join(BASE, "questions.json")))
 BANK = [{"id": q["id"], "difficulty": q["difficulty"], "topics": q["topics"]}
         for q in QUESTIONS]
+# The real exam has no fixed length, so a simulation needs its own stopping
+# point — long enough to show the ladder settle, short enough to read.
+SIM_LENGTH = CONFIG["exam"].get("maxQuestions") or 30
 
 
 def behavior(name, rng):
@@ -42,7 +45,7 @@ def run(name, seed=7):
     state = eng.initial_state()
     seen, served = set(), {}
     path = []
-    while not eng.is_exam_complete(len(path)):
+    while len(path) < SIM_LENGTH:
         q, debug = eng.select_next(state, seen, BANK, served, rng)
         if q is None:
             path.append(("<pool exhausted>", None, None))

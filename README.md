@@ -30,10 +30,15 @@ Four screens, one job each.
 **Welcome back** screen appears instead of Instructions, showing their exact
 progress and remaining time.
 
-The question screen shows a progress rail (position only, never level), a
-clock that turns red under five minutes, the question, and four options. Keys
-1–4 select, Enter submits. Submit is disabled until an option is chosen and
-disables on submit, so a double-click cannot double-post.
+The question screen shows how many questions in they are, a clock that turns
+red under five minutes, the question, and four options. Keys 1–4 select, Enter
+submits. Submit is disabled until an option is chosen and disables on submit,
+so a double-click cannot double-post.
+
+By default the exam has **no fixed length** — students answer as many as they
+can before the clock runs out, and are never shown a target number to hit.
+Give `maxQuestions` a number in `config.json` and the progress rail and
+"Question 3 of 20" counters come back. See **Changing the adaptive rules**.
 
 Students never receive — in any byte of any page — correct answers, difficulty
 labels, topics, explanations, their score, or future questions. A test strips
@@ -294,13 +299,73 @@ Fly.io — with `DB_DIR` pointed at a mounted volume and a real `ADMIN_KEY`.
 | File | Role |
 |---|---|
 | `adaptive_engine.py` | Pure engine: `initial_state`, `record_answer`, `select_next`. No I/O. |
-| `config.json` | Thresholds and topic blueprint. **The only file to edit to change adaptive behaviour.** |
+| `config.json` | The difficulty ladder, exam length and topic blueprint. **The only file to edit to change adaptive behaviour**, including adding levels. |
 | `questions.json` | Seed bank: 90 questions across seven topics; MCQ, image and dataset types. |
 | `seed.py` | Schema and seeding; `UNIQUE(attempt_id, question_id)` guarantees non-repetition. |
 | `server.py` | All screens and state. The server owns the current question, clock and score. |
 | `loadtest.py` | Cohort load test. |
 
-Changing adaptive rules: edit `config.json`, restart. No reseed needed.
+---
+
+## Changing the adaptive rules
+
+**Levels are data, not code.** The ladder lives in `config.json`, easiest
+first, and everything else derives from it — the state machine, the selection
+fallback, the SQLite `CHECK` constraint, the admin dropdowns and filters, the
+CSV upload validator.
+
+```json
+"adaptive": {
+  "startingLevel": "easy",
+  "levels": [
+    { "name": "easy",   "promoteAfterCorrect": 3 },
+    { "name": "medium", "promoteAfterCorrect": 2, "demoteAfterWrong": 2 },
+    { "name": "hard",                             "demoteAfterWrong": 1 }
+  ]
+}
+```
+
+`promoteAfterCorrect` is how many right answers in a row move a student up one
+rung; `demoteAfterWrong` is how many wrong answers move them down one. Both
+counters reset on any level change, and a right answer clears the wrong streak
+(and vice versa). Omitting a key pins that direction — a level with no
+`promoteAfterCorrect` is never promoted out of, however long the streak runs.
+The key is ignored on the top level going up and the bottom level going down,
+because there is nowhere to go.
+
+**To add a fourth level**, add it to the list and give some questions that
+difficulty:
+
+```json
+{ "name": "hard",   "promoteAfterCorrect": 2, "demoteAfterWrong": 1 },
+{ "name": "expert",                           "demoteAfterWrong": 1 }
+```
+
+Then `python3 seed.py --fresh` and restart. Re-seeding is required because the
+`difficulty` column's `CHECK` constraint is generated from this list — an
+existing database keeps its old constraint and will reject the new value.
+There is nothing else to change. Levels can be renamed or reordered the same
+way; names are arbitrary strings, so `foundation / core / stretch` works just
+as well as `easy / medium / hard`.
+
+Rule changes that don't touch the level names — different thresholds, a
+different `startingLevel` — just need a restart, no reseed.
+
+Configs written before levels were data (`startingDifficulty` plus the four
+`easyToMediumCorrectThreshold`-style keys) are still read, so an old
+`config.json` keeps working unchanged.
+
+### Exam length
+
+`"maxQuestions": null` means the exam has **no fixed length**: students answer
+as many as they can until the clock runs out or the bank is exhausted, and no
+screen ever tells them a target number. Set it to a number to cap the exam
+instead — the progress rail and "Question 3 of 20" counters come back
+automatically.
+
+Topic quotas stay proportional either way. With no fixed length they are
+measured against the whole question bank, so the blueprint weights hold at any
+exam length.
 
 ---
 

@@ -16,7 +16,31 @@ import sys
 DB_PATH = os.path.join(os.environ.get("DB_DIR", os.path.dirname(__file__)),
                        "mesa.db")
 
-SCHEMA = """
+
+def level_names():
+    """The difficulty ladder, straight from config.json.
+
+    The questions table constrains `difficulty` to these values, so the
+    constraint has to be built from the same source the engine reads. Adding
+    a level to config and re-seeding is all it takes; a stale database keeps
+    its old constraint until you re-run with --fresh.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "config.json")
+    with open(path) as f:
+        adaptive = json.load(f)["adaptive"]
+    levels = adaptive.get("levels")
+    if not levels:
+        return ["easy", "medium", "hard"]            # legacy config
+    return [(lv if isinstance(lv, str) else lv["name"]) for lv in levels]
+
+
+def _difficulty_check():
+    values = ",".join("'%s'" % n.replace("'", "''") for n in level_names())
+    return "CHECK(difficulty IN (%s))" % values
+
+
+_SCHEMA_TEMPLATE = """
 CREATE TABLE IF NOT EXISTS students(
   id INTEGER PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -27,7 +51,7 @@ CREATE TABLE IF NOT EXISTS students(
 );
 CREATE TABLE IF NOT EXISTS questions(
   id TEXT PRIMARY KEY,
-  difficulty TEXT NOT NULL CHECK(difficulty IN ('easy','medium','hard')),
+  difficulty TEXT NOT NULL {difficulty_check},
   qtype TEXT NOT NULL,
   prompt TEXT NOT NULL,
   options_json TEXT NOT NULL,
@@ -81,6 +105,9 @@ CREATE TABLE IF NOT EXISTS events(
 );
 CREATE INDEX IF NOT EXISTS idx_events_attempt ON events(attempt_id);
 """
+
+# Resolved once at import so `seed.SCHEMA` stays a ready-to-run script.
+SCHEMA = _SCHEMA_TEMPLATE.format(difficulty_check=_difficulty_check())
 
 DEMO_STUDENTS = [
     ("chandu", "Chandu Demo"),

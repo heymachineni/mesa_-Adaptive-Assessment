@@ -90,18 +90,64 @@ class TestTransitions(unittest.TestCase):
 
     def test_configurable_thresholds(self):
         cfg = json.loads(json.dumps(CONFIG))
-        cfg["adaptive"]["easyToMediumCorrectThreshold"] = 1
+        cfg["adaptive"]["levels"][0]["promoteAfterCorrect"] = 1
         e = AdaptiveEngine(cfg)
         s, _ = self.drive([True], engine=e)
         self.assertEqual(s["difficulty"], "medium")
 
+    def test_legacy_three_level_config_still_works(self):
+        """A config written before levels were data must keep working."""
+        cfg = {"adaptive": {"startingDifficulty": "easy",
+                            "easyToMediumCorrectThreshold": 2,
+                            "mediumToHardCorrectThreshold": 2,
+                            "mediumToEasyWrongThreshold": 2,
+                            "hardToMediumWrongThreshold": 1},
+               "exam": {"maxQuestions": 30},
+               "blueprint": {"topics": {"a": 1}}}
+        e = AdaptiveEngine(cfg)
+        self.assertEqual(e.names, ["easy", "medium", "hard"])
+        s, _ = self.drive([True, True], engine=e)
+        self.assertEqual(s["difficulty"], "medium")
+        s, _ = self.drive([True] * 4, engine=e)
+        self.assertEqual(s["difficulty"], "hard")
+
+    def test_four_levels_from_config_alone(self):
+        """Adding a level is a config edit — no code change anywhere."""
+        cfg = {"adaptive": {"startingLevel": "easy", "levels": [
+                    {"name": "easy", "promoteAfterCorrect": 2},
+                    {"name": "medium", "promoteAfterCorrect": 2,
+                     "demoteAfterWrong": 2},
+                    {"name": "hard", "promoteAfterCorrect": 2,
+                     "demoteAfterWrong": 1},
+                    {"name": "expert", "demoteAfterWrong": 1}]},
+               "exam": {"maxQuestions": None},
+               "blueprint": {"topics": {"a": 1}}}
+        e = AdaptiveEngine(cfg)
+        self.assertEqual(e.names, ["easy", "medium", "hard", "expert"])
+        # climb the whole ladder: 2 correct per rung
+        s, decisions = self.drive([True] * 6, engine=e)
+        self.assertEqual(s["difficulty"], "expert")
+        self.assertIn("promote hard->expert", decisions)
+        # the top can't promote further, however long the streak
+        s, _ = self.drive([True] * 20, engine=e)
+        self.assertEqual(s["difficulty"], "expert")
+        # one wrong at the top drops exactly one rung
+        s, d = e.record_answer(s, False)
+        self.assertEqual(s["difficulty"], "hard")
+        self.assertEqual(d, "demote expert->hard")
+
+    def test_bottom_level_never_demotes(self):
+        s, _ = self.drive([False] * 10)
+        self.assertEqual(s["difficulty"], "easy")
+
 
 class TestSelection(unittest.TestCase):
     def test_never_repeats_over_full_exam(self):
+        """With no fixed length, 'a full exam' is the entire bank."""
         e = eng()
         s, seen, served = e.initial_state(), set(), {}
         rng = random.Random(1)
-        for _ in range(e.max_questions):
+        for _ in range(e.max_questions or len(BANK)):
             q, _ = e.select_next(s, seen, BANK, served, rng)
             self.assertIsNotNone(q)
             self.assertNotIn(q["id"], seen)
@@ -145,8 +191,23 @@ class TestSelection(unittest.TestCase):
         self.assertIsNone(q)
 
     def test_blueprint_targets_sum_close_to_max(self):
-        total = sum(eng().topic_targets().values())
-        self.assertAlmostEqual(total, eng().max_questions, delta=3)
+        """Quotas are proportional to whatever total they're asked about."""
+        for length in (30, 60, len(BANK)):
+            total = sum(eng().topic_targets(length).values())
+            self.assertAlmostEqual(total, length, delta=3)
+
+    def test_unlimited_exam_never_reports_complete(self):
+        e = eng()
+        self.assertIsNone(e.max_questions)
+        self.assertFalse(e.is_exam_complete(0))
+        self.assertFalse(e.is_exam_complete(10_000))
+
+    def test_capped_exam_still_completes(self):
+        cfg = json.loads(json.dumps(CONFIG))
+        cfg["exam"]["maxQuestions"] = 12
+        e = AdaptiveEngine(cfg)
+        self.assertFalse(e.is_exam_complete(11))
+        self.assertTrue(e.is_exam_complete(12))
 
 
 class TestDatabaseGuarantee(unittest.TestCase):
