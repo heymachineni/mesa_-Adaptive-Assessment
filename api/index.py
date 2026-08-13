@@ -102,7 +102,13 @@ if _import_error is not None:
 else:
     class handler(server.Handler):
         def _normalize(self):
-            """The catch-all rewrite can arrive as /api/index; map it back."""
+            """The catch-all route can arrive as /api/index; map it back.
+
+            Vercel is expected to hand us the URL the student actually asked
+            for, so this should never fire. If it does, every route would
+            otherwise collapse onto the sign-in page, so say so loudly in the
+            Runtime Logs rather than fail quietly.
+            """
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path
             if path in ("/api/index", "/api/index.py"):
@@ -111,6 +117,10 @@ else:
                 path = path[len("/api/index"):]
             else:
                 return
+            sys.stderr.write(
+                f"[mesa] routing rewrote the path: got {self.path!r}, using "
+                f"{path!r}. The original URL did not survive the catch-all "
+                f"route.\n")
             self.path = urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
 
         def _serve(self, method):

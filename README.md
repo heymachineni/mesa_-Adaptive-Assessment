@@ -176,9 +176,26 @@ vercel deploy --prod        # or just push to the connected GitHub repo
 `api/index.py` is the entrypoint. Vercel's Python runtime looks for a class
 named `handler` that subclasses `BaseHTTPRequestHandler`, which is what
 `server.Handler` already is, so it re-exports that class and `vercel.json`
-rewrites every path to it. Without those two files Vercel finds no framework
+routes every path to it. Without those two files Vercel finds no framework
 and no `index.html`, treats the repo as a static site with nothing to serve,
-and answers **404 on every route** — that is the symptom this setup fixes.
+and answers **404 on every route**.
+
+`vercel.json` declares the builder explicitly rather than relying on
+auto-detection:
+
+```json
+{ "builds": [{ "src": "api/index.py", "use": "@vercel/python",
+               "config": { "includeFiles": "**" } }],
+  "routes": [{ "src": "/(.*)", "dest": "/api/index" }] }
+```
+
+The earlier `functions` form failed to deploy with *"The pattern
+`api/index.py` defined in `functions` doesn't match any Serverless Functions
+inside the `api` directory"* — Vercel's auto-detection found no function to
+attach the config to. Naming the builder removes the guesswork. Note that
+`builds` turns off zero-config, so routing must use `routes`, not `rewrites`;
+`includeFiles` keeps `questions.json`, `config.json` and `assets/` in the
+bundle.
 
 Set these in **Project → Settings → Environment Variables**:
 
